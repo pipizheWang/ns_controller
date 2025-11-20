@@ -72,7 +72,8 @@ class TrajController(Node):
             current = Path(__file__).resolve()
             for parent in current.parents:
                 if parent.name == 'px4_ws':  # 工作空间根目录
-                    candidate = parent / 'src' / 'ns_controller' / 'ns_controller' / 'log'
+                    # 按需保存到 /px4_ws/src/ns_controller/log
+                    candidate = parent / 'src' / 'ns_controller' / 'log'
                     return candidate
             # 兜底：使用当前工作目录
             return Path.cwd() / 'log'
@@ -82,7 +83,8 @@ class TrajController(Node):
 
         # 生成带时间戳的文件名（精确到分钟）
         timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
-        log_filename = f'{timestamp}.csv'
+        # NL0：文件名追加后缀 _0
+        log_filename = f'{timestamp}_0.csv'
         self.log_file_path = log_dir / log_filename
 
         # 创建CSV文件并写入表头

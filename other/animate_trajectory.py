@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-无人机3D轨迹动画工具
-读取CSV格式的飞行日志并生成3D动画，展示无人机的飞行轨迹和姿态变化
+无人机3D轨迹动画工具（双日志版本支持）
+读取CSV格式的飞行日志并生成3D动画，展示无人机的飞行轨迹和姿态变化。
+
+本版本支持将“最新的两份日志（*_0.csv 与 *_1.csv）”同时绘制到同一个动画中。
+也可通过 --log0/--log1 指定文件路径。
 """
 
 import numpy as np
@@ -10,7 +13,6 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from pathlib import Path
 import csv
 import sys
-from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.patches import Circle
 import mpl_toolkits.mplot3d.art3d as art3d
 
@@ -373,13 +375,255 @@ class TrajectoryAnimator:
         return anim
 
 
+class DualTrajectoryAnimator:
+    """双日志轨迹动画：将两架无人机的轨迹绘制在同一个 3D 动画中。"""
+
+    def __init__(self, log0_path, log1_path, arm_length=0.5):
+        self.log0_path = Path(log0_path)
+        self.log1_path = Path(log1_path)
+        self.data0 = None
+        self.data1 = None
+        self.quad0 = QuadrotorModel(arm_length=arm_length)
+        self.quad1 = QuadrotorModel(arm_length=arm_length)
+        self.fig = None
+        self.ax = None
+        self.frame_skip0 = 1
+        self.frame_skip1 = 1
+
+        # 绘图元素
+        self.trajectory_line0 = None
+        self.trajectory_line1 = None
+        self.arm_lines0 = []
+        self.arm_lines1 = []
+        self.rotor_circles0 = []
+        self.rotor_circles1 = []
+        self.info_text = None
+
+    def _load_one(self, path):
+        if not path.exists():
+            raise FileNotFoundError(f"日志文件不存在: {path}")
+        with open(path, 'r') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        if not rows:
+            raise ValueError(f"日志文件为空: {path}")
+        data = {
+            'timestamp': np.array([float(row['timestamp']) for row in rows]),
+            'x': np.array([float(row['x']) for row in rows]),
+            'y': np.array([float(row['y']) for row in rows]),
+            'z': np.array([float(row['z']) for row in rows]),
+            'roll': np.array([float(row['roll']) for row in rows]),
+            'pitch': np.array([float(row['pitch']) for row in rows]),
+            'yaw': np.array([float(row['yaw']) for row in rows]),
+            'x_des': np.array([float(row['x_des']) for row in rows]),
+            'y_des': np.array([float(row['y_des']) for row in rows]),
+            'z_des': np.array([float(row['z_des']) for row in rows]),
+        }
+        data['time'] = data['timestamp'] - data['timestamp'][0]
+        return data, len(rows)
+
+    def load_data(self):
+        self.data0, n0 = self._load_one(self.log0_path)
+        self.data1, n1 = self._load_one(self.log1_path)
+        print(f"log0: {self.log0_path.name} -> {n0} 条记录, 时长 {self.data0['time'][-1]:.2f}s")
+        print(f"log1: {self.log1_path.name} -> {n1} 条记录, 时长 {self.data1['time'][-1]:.2f}s")
+
+        # 自动跳帧，使动画在合理帧数范围
+        target_frames = 400
+        self.frame_skip0 = max(1, n0 // target_frames)
+        self.frame_skip1 = max(1, n1 // target_frames)
+        print(f"跳帧率: log0={self.frame_skip0}, log1={self.frame_skip1}")
+
+    def setup_plot(self):
+        self.fig = plt.figure(figsize=(14, 10))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+
+        self.fig.suptitle('Dual Quadrotor Trajectory Animation (log0 + log1)', fontsize=16, fontweight='bold')
+        self.ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
+        self.ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
+        self.ax.set_zlabel('Z (m)', fontsize=12, labelpad=10)
+
+        # 结合两份日志的数据计算范围
+        all_x = np.concatenate([self.data0['x'], self.data0['x_des'], self.data1['x'], self.data1['x_des']])
+        all_y = np.concatenate([self.data0['y'], self.data0['y_des'], self.data1['y'], self.data1['y_des']])
+        all_z = np.concatenate([self.data0['z'], self.data0['z_des'], self.data1['z'], self.data1['z_des']])
+        max_range = np.array([
+            all_x.max() - all_x.min(),
+            all_y.max() - all_y.min(),
+            all_z.max() - all_z.min(),
+        ]).max() / 2.0
+        max_range *= 1.2
+        mid_x = (all_x.max() + all_x.min()) * 0.5
+        mid_y = (all_y.max() + all_y.min()) * 0.5
+        mid_z = (all_z.max() + all_z.min()) * 0.5
+        self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        self.ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+        self.ax.view_init(elev=25, azim=45)
+
+        # 期望轨迹（半透明虚线）：蓝色对应 log0，橙色对应 log1
+        self.ax.plot(self.data0['x_des'], self.data0['y_des'], self.data0['z_des'],
+                     color='#1f77b4', linestyle='--', linewidth=2, alpha=0.35, label='Desired 0')
+        self.ax.plot(self.data1['x_des'], self.data1['y_des'], self.data1['z_des'],
+                     color='#ff7f0e', linestyle='--', linewidth=2, alpha=0.35, label='Desired 1')
+
+        # 起点/终点标记
+        self.ax.scatter(self.data0['x'][0], self.data0['y'][0], self.data0['z'][0],
+                        c='green', s=160, marker='o', label='Start 0', zorder=10)
+        self.ax.scatter(self.data0['x'][-1], self.data0['y'][-1], self.data0['z'][-1],
+                        c='red', s=160, marker='s', label='End 0', zorder=10)
+        self.ax.scatter(self.data1['x'][0], self.data1['y'][0], self.data1['z'][0],
+                        c='lime', s=140, marker='o', label='Start 1', zorder=10)
+        self.ax.scatter(self.data1['x'][-1], self.data1['y'][-1], self.data1['z'][-1],
+                        c='darkred', s=140, marker='s', label='End 1', zorder=10)
+
+        self.ax.legend(loc='upper right', fontsize=10)
+        self.ax.grid(True, alpha=0.3)
+
+    def init_animation(self):
+        # 轨迹线
+        self.trajectory_line0, = self.ax.plot([], [], [], color='#1f77b4', linewidth=2.5, alpha=0.9, label='Actual 0')
+        self.trajectory_line1, = self.ax.plot([], [], [], color='#ff7f0e', linewidth=2.5, alpha=0.9, label='Actual 1')
+
+        # 两架无人机机臂
+        self.arm_lines0 = []
+        self.arm_lines1 = []
+        for _ in range(4):
+            l0, = self.ax.plot([], [], [], color='navy', linewidth=3)
+            l1, = self.ax.plot([], [], [], color='saddlebrown', linewidth=3)
+            self.arm_lines0.append(l0)
+            self.arm_lines1.append(l1)
+
+        # 旋翼圆圈（用折线近似）
+        self.rotor_circles0 = []
+        self.rotor_circles1 = []
+        for _ in range(4):
+            c0, = self.ax.plot([], [], [], color='gray', linewidth=2, alpha=0.7)
+            c1, = self.ax.plot([], [], [], color='gray', linewidth=2, alpha=0.7)
+            self.rotor_circles0.append(c0)
+            self.rotor_circles1.append(c1)
+
+        self.info_text = self.ax.text2D(
+            0.02, 0.95, '', transform=self.ax.transAxes,
+            fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+        )
+
+        return [self.trajectory_line0, self.trajectory_line1] + \
+               self.arm_lines0 + self.arm_lines1 + \
+               self.rotor_circles0 + self.rotor_circles1 + [self.info_text]
+
+    def _update_one(self, idx, data, quad, arm_lines, rotor_circles, traj_line):
+        # 位置与姿态
+        x, y, z = data['x'][idx], data['y'][idx], data['z'][idx]
+        roll = np.deg2rad(data['roll'][idx])
+        pitch = np.deg2rad(data['pitch'][idx])
+        yaw = np.deg2rad(data['yaw'][idx])
+
+        # 轨迹
+        traj_line.set_data(data['x'][:idx+1], data['y'][:idx+1])
+        traj_line.set_3d_properties(data['z'][:idx+1])
+
+        # 机臂
+        position = np.array([x, y, z])
+        arm_endpoints = quad.transform(position, roll, pitch, yaw)
+        for i, line in enumerate(arm_lines):
+            line.set_data([position[0], arm_endpoints[i, 0]], [position[1], arm_endpoints[i, 1]])
+            line.set_3d_properties([position[2], arm_endpoints[i, 2]])
+
+        # 旋翼
+        n_points = 20
+        theta = np.linspace(0, 2*np.pi, n_points)
+        radius = quad.rotor_radius
+        circle_local = np.vstack([radius*np.cos(theta), radius*np.sin(theta), np.zeros_like(theta)])
+        R = quad.rotation_matrix(roll, pitch, yaw)
+        for i, line in enumerate(rotor_circles):
+            world_circle = (R @ circle_local).T + arm_endpoints[i]
+            line.set_data(world_circle[:, 0], world_circle[:, 1])
+            line.set_3d_properties(world_circle[:, 2])
+
+        # 误差
+        ex = x - data['x_des'][idx]
+        ey = y - data['y_des'][idx]
+        ez = z - data['z_des'][idx]
+        err = np.sqrt(ex**2 + ey**2 + ez**2)
+        return position, np.rad2deg([roll, pitch, yaw]), err
+
+    def update_frame(self, frame):
+        idx0 = min(frame * self.frame_skip0, len(self.data0['x']) - 1)
+        idx1 = min(frame * self.frame_skip1, len(self.data1['x']) - 1)
+
+        pos0, att0_deg, err0 = self._update_one(idx0, self.data0, self.quad0, self.arm_lines0, self.rotor_circles0, self.trajectory_line0)
+        pos1, att1_deg, err1 = self._update_one(idx1, self.data1, self.quad1, self.arm_lines1, self.rotor_circles1, self.trajectory_line1)
+
+        t0 = self.data0['time'][idx0]
+        t1 = self.data1['time'][idx1]
+        t_str = f"t0={t0:.2f}s, t1={t1:.2f}s"
+        info = (
+            f"{t_str}\n"
+            f"log0 Pos=({pos0[0]:.2f},{pos0[1]:.2f},{pos0[2]:.2f}) Att=({att0_deg[0]:.1f}°, {att0_deg[1]:.1f}°, {att0_deg[2]:.1f}°) Err={err0:.3f}m\n"
+            f"log1 Pos=({pos1[0]:.2f},{pos1[1]:.2f},{pos1[2]:.2f}) Att=({att1_deg[0]:.1f}°, {att1_deg[1]:.1f}°, {att1_deg[2]:.1f}°) Err={err1:.3f}m"
+        )
+        self.info_text.set_text(info)
+
+        return (
+            [self.trajectory_line0, self.trajectory_line1]
+            + self.arm_lines0 + self.arm_lines1
+            + self.rotor_circles0 + self.rotor_circles1
+            + [self.info_text]
+        )
+
+    def create_animation(self, interval=50, save_path=None):
+        if self.data0 is None or self.data1 is None:
+            self.load_data()
+
+        self.setup_plot()
+        n_frames = min(len(self.data0['x']) // self.frame_skip0,
+                       len(self.data1['x']) // self.frame_skip1)
+
+        print(f"\n开始生成双日志动画...")
+        print(f"总帧数: {n_frames}")
+        print(f"帧间隔: {interval} ms")
+
+        anim = FuncAnimation(
+            self.fig,
+            self.update_frame,
+            init_func=self.init_animation,
+            frames=n_frames,
+            interval=interval,
+            blit=False,
+            repeat=True,
+        )
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            print(f"\n正在保存动画到: {save_path}")
+            if save_path.suffix == '.gif':
+                writer = PillowWriter(fps=1000//interval)
+                anim.save(save_path, writer=writer, dpi=100)
+                print(f"动画已保存为GIF: {save_path}")
+            elif save_path.suffix == '.mp4':
+                anim.save(save_path, writer='ffmpeg', fps=1000//interval, dpi=100)
+                print(f"动画已保存为MP4: {save_path}")
+            else:
+                print(f"警告: 不支持的文件格式 {save_path.suffix}，将保存为GIF")
+                save_path = save_path.with_suffix('.gif')
+                writer = PillowWriter(fps=1000//interval)
+                anim.save(save_path, writer=writer, dpi=100)
+                print(f"动画已保存: {save_path}")
+
+        return anim
+
+
 def main():
     """主函数"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Quadrotor Trajectory Animation Tool')
-    parser.add_argument('log_file', type=str, nargs='?',
-                       help='Log file path (CSV format)')
+    parser = argparse.ArgumentParser(description='Quadrotor Trajectory Animation Tool (Dual logs supported)')
+    # 可选指定两份日志；若未指定则自动在 log 目录里选择最新一对 (_0 与 _1)
+    parser.add_argument('--log0', type=str, default=None, help='Path to log file ending with _0.csv')
+    parser.add_argument('--log1', type=str, default=None, help='Path to log file ending with _1.csv')
     parser.add_argument('--save', type=str, default=None,
                        help='Save animation to file (support .gif and .mp4)')
     parser.add_argument('--interval', type=int, default=50,
@@ -391,7 +635,7 @@ def main():
     
     args = parser.parse_args()
     
-    # 获取log目录路径
+    # 获取log目录路径（源码同级：.../ns_controller/log）
     current_file = Path(__file__).resolve()
     package_dir = current_file.parent.parent
     log_dir = package_dir / 'log'
@@ -411,40 +655,66 @@ def main():
             print(f"日志目录不存在: {log_dir}")
         return
     
-    # 确定日志文件路径
-    if args.log_file:
-        log_file_path = Path(args.log_file)
+    # 选择两份日志：优先使用 --log0/--log1，否则在 log_dir 自动匹配最新一对
+    def find_latest_pair(directory: Path):
+        csvs = list(directory.glob('*.csv'))
+        if not csvs:
+            return None
+        pair_map = {}
+        for f in csvs:
+            stem = f.stem
+            if stem.endswith('_0') or stem.endswith('_1'):
+                base = stem[:-2]
+                suffix = stem[-1]
+                rec = pair_map.get(base, {'0': None, '1': None, 'mtime': 0.0})
+                rec[suffix] = f
+                rec['mtime'] = max(rec['mtime'], f.stat().st_mtime)
+                pair_map[base] = rec
+        candidates = [(base, rec) for base, rec in pair_map.items() if rec['0'] and rec['1']]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[1]['mtime'])
+        base, rec = candidates[-1]
+        return rec['0'], rec['1'], base
+
+    if args.log0 and args.log1:
+        log0 = Path(args.log0)
+        log1 = Path(args.log1)
+        if not log0.exists() or not log1.exists():
+            print("错误: --log0 或 --log1 路径不存在")
+            sys.exit(1)
+        base_name = None
     else:
-        # 如果没有指定文件，使用最新的日志文件
-        if log_dir.exists():
-            log_files = list(log_dir.glob('*.csv'))
-            if log_files:
-                log_files.sort(key=lambda f: f.stat().st_mtime)
-                log_file_path = log_files[-1]
-                print(f"未指定日志文件，使用最新的: {log_file_path.name}")
-            else:
-                print(f"错误: 在 {log_dir} 中没有找到日志文件")
-                print("使用 --list 查看可用的日志文件")
-                sys.exit(1)
-        else:
+        if not log_dir.exists():
             print(f"错误: 日志目录不存在: {log_dir}")
             sys.exit(1)
+        pair = find_latest_pair(log_dir)
+        if not pair:
+            print(f"错误: 在 {log_dir} 中未找到匹配的一对日志(*_0.csv 与 *_1.csv)")
+            print("使用 --list 查看可用的日志文件")
+            sys.exit(1)
+        log0, log1, base_name = pair
+        print(f"使用最新一对日志: {log0.name}  |  {log1.name}")
     
     # 确定保存路径
     save_path = None
     if args.save:
         save_path = Path(args.save)
     else:
-        # 默认保存为GIF到log目录
-        log_name = log_file_path.stem
-        save_path = log_dir / f'{log_name}_animation.gif'
+        # 默认保存到 log 目录，文件名用共同前缀 + _dual_animation.gif
+        if base_name is None:
+            # 尝试根据两个文件名构造
+            stem0 = Path(log0).stem
+            stem1 = Path(log1).stem
+            base_name = stem0.rsplit('_', 1)[0] if stem0.rsplit('_', 1)[0] == stem1.rsplit('_', 1)[0] else f"{stem0}__{stem1}"
+        save_path = log_dir / f'{base_name}_dual_animation.gif'
         print(f"未指定保存路径，将保存到: {save_path}")
     
     try:
-        # 创建动画器
-        animator = TrajectoryAnimator(log_file_path, arm_length=args.arm_length)
+        # 创建双日志动画器
+        animator = DualTrajectoryAnimator(log0, log1, arm_length=args.arm_length)
         animator.load_data()
-        
+
         # 生成动画
         anim = animator.create_animation(interval=args.interval, save_path=save_path)
         

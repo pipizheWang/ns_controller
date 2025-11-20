@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-飞行日志绘图工具
-读取CSV格式的飞行日志并绘制位置响应、跟踪误差和轨迹曲线
+飞行日志绘图工具（双日志版本）
+
+读取 CSV 格式的飞行日志并绘制：
+- 位置响应、跟踪误差、姿态角、轨迹曲线
+
+本版本针对一次生成两份日志（文件名分别以 _0.csv 和 _1.csv 结尾）的情形：
+- 每张图都使用两行布局：
+    - 上排：_0.csv 的绘制
+    - 下排：_1.csv 的绘制
 """
 
 import numpy as np
@@ -63,210 +70,241 @@ class FlightLogPlotter:
         print(f"成功加载 {len(rows)} 条数据记录")
         print(f"飞行时长: {self.data['time'][-1]:.2f} 秒")
         
-    def plot_position_response(self):
-        """绘制三轴位置和期望位置的响应曲线（3列1行）"""
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle('Position Response', fontsize=14, fontweight='bold')
-        
-        axes_labels = ['X Axis', 'Y Axis', 'Z Axis']
-        pos_keys = ['x', 'y', 'z']
-        des_keys = ['x_des', 'y_des', 'z_des']
-        
-        for i, (ax, label, pos_key, des_key) in enumerate(zip(axes, axes_labels, pos_keys, des_keys)):
-            ax.plot(self.data['time'], self.data[pos_key], 'b-', linewidth=2, label='Actual')
-            ax.plot(self.data['time'], self.data[des_key], 'r--', linewidth=2, label='Desired')
-            ax.set_xlabel('Time (s)', fontsize=11)
-            ax.set_ylabel('Position (m)', fontsize=11)
-            ax.set_title(label, fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='best', fontsize=9)
-        
-        plt.tight_layout()
-        return fig
-    
-    def plot_tracking_error(self):
-        """绘制三轴轨迹跟踪误差曲线（3列1行）"""
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle('Tracking Error', fontsize=14, fontweight='bold')
-        
-        axes_labels = ['X Error', 'Y Error', 'Z Error']
-        error_keys = ['error_x', 'error_y', 'error_z']
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-        
-        for i, (ax, label, error_key, color) in enumerate(zip(axes, axes_labels, error_keys, colors)):
-            ax.plot(self.data['time'], self.data[error_key], color=color, linewidth=2)
-            ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-            ax.set_xlabel('Time (s)', fontsize=11)
-            ax.set_ylabel('Error (m)', fontsize=11)
-            ax.set_title(label, fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            
-            # 显示统计信息
-            mean_error = np.mean(np.abs(self.data[error_key]))
-            max_error = np.max(np.abs(self.data[error_key]))
-            ax.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nMax: {max_error:.3f}m',
-                   transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-                   fontsize=9)
-        
-        plt.tight_layout()
-        return fig
-    
-    def plot_attitude(self):
-        """绘制三个姿态角的曲线（3列1行）"""
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle('Attitude Angles', fontsize=14, fontweight='bold')
-        
-        axes_labels = ['Roll', 'Pitch', 'Yaw']
-        attitude_keys = ['roll', 'pitch', 'yaw']
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-        
-        for i, (ax, label, att_key, color) in enumerate(zip(axes, axes_labels, attitude_keys, colors)):
-            # 数据已经是度数，无需转换
-            angle_deg = self.data[att_key]
-            ax.plot(self.data['time'], angle_deg, color=color, linewidth=2)
-            ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-            ax.set_xlabel('Time (s)', fontsize=11)
-            ax.set_ylabel('Angle (deg)', fontsize=11)
-            ax.set_title(label, fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            
-            # 显示统计信息
-            mean_angle = np.mean(np.abs(angle_deg))
-            max_angle = np.max(np.abs(angle_deg))
-            ax.text(0.02, 0.98, f'Mean: {mean_angle:.2f}°\nMax: {max_angle:.2f}°',
-                   transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-                   fontsize=9)
-        
-        plt.tight_layout()
-        return fig
-    
-    def plot_trajectory(self):
-        """绘制无人机轨迹曲线（3D和XY平面，2列1行）"""
-        fig = plt.figure(figsize=(14, 6))
-        
-        # 3D轨迹图
-        ax1 = fig.add_subplot(121, projection='3d')
-        
-        # 绘制实际轨迹
-        ax1.plot(self.data['x'], self.data['y'], self.data['z'], 
-                'b-', linewidth=2, label='Actual', alpha=0.8)
-        
-        # 绘制期望轨迹
-        ax1.plot(self.data['x_des'], self.data['y_des'], self.data['z_des'], 
-                'r--', linewidth=2, label='Desired', alpha=0.8)
-        
-        # 标记起点和终点
-        ax1.scatter(self.data['x'][0], self.data['y'][0], self.data['z'][0], 
-                   c='green', s=100, marker='o', label='Start', zorder=5)
-        ax1.scatter(self.data['x'][-1], self.data['y'][-1], self.data['z'][-1], 
-                   c='red', s=100, marker='s', label='End', zorder=5)
-        
-        ax1.set_xlabel('X (m)', fontsize=11)
-        ax1.set_ylabel('Y (m)', fontsize=11)
-        ax1.set_zlabel('Z (m)', fontsize=11)
-        ax1.set_title('3D Trajectory', fontsize=12, fontweight='bold')
-        ax1.legend(loc='best', fontsize=9)
-        ax1.grid(True, alpha=0.3)
-        
-        # 设置相等的坐标轴比例
-        max_range = np.array([
-            self.data['x'].max() - self.data['x'].min(),
-            self.data['y'].max() - self.data['y'].min(),
-            self.data['z'].max() - self.data['z'].min()
-        ]).max() / 2.0
-        
-        mid_x = (self.data['x'].max() + self.data['x'].min()) * 0.5
-        mid_y = (self.data['y'].max() + self.data['y'].min()) * 0.5
-        mid_z = (self.data['z'].max() + self.data['z'].min()) * 0.5
-        
-        ax1.set_xlim(mid_x - max_range, mid_x + max_range)
-        ax1.set_ylim(mid_y - max_range, mid_y + max_range)
-        ax1.set_zlim(mid_z - max_range, mid_z + max_range)
-        
-        # XY平面轨迹图
-        ax2 = fig.add_subplot(122)
-        
-        # 绘制实际轨迹
-        ax2.plot(self.data['x'], self.data['y'], 'b-', linewidth=2, 
-                label='Actual', alpha=0.8)
-        
-        # 绘制期望轨迹
-        ax2.plot(self.data['x_des'], self.data['y_des'], 'r--', linewidth=2, 
-                label='Desired', alpha=0.8)
-        
-        # 标记起点和终点
-        ax2.scatter(self.data['x'][0], self.data['y'][0], 
-                   c='green', s=100, marker='o', label='Start', zorder=5)
-        ax2.scatter(self.data['x'][-1], self.data['y'][-1], 
-                   c='red', s=100, marker='s', label='End', zorder=5)
-        
-        ax2.set_xlabel('X (m)', fontsize=11)
-        ax2.set_ylabel('Y (m)', fontsize=11)
-        ax2.set_title('XY Plane Trajectory', fontsize=12, fontweight='bold')
-        ax2.legend(loc='best', fontsize=9)
-        ax2.grid(True, alpha=0.3)
-        ax2.axis('equal')
-        
-        plt.tight_layout()
-        return fig
-    
-    def plot_all(self, save_dir=None):
-        """
-        绘制所有图表
-        
-        Args:
-            save_dir: 保存图片的目录，如果为None则只显示不保存
-        """
-        if self.data is None:
-            self.load_data()
-        
-        # 使用英文标签，避免中文字体问题
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
-        plt.rcParams['axes.unicode_minus'] = False
-        
-        print("\nGenerating plots...")
-        
-        # 1. 位置响应曲线
-        print("1. Plotting position response...")
-        fig1 = self.plot_position_response()
-        
-        # 2. 跟踪误差曲线
-        print("2. Plotting tracking error...")
-        fig2 = self.plot_tracking_error()
-        
-        # 3. 姿态角曲线
-        print("3. Plotting attitude angles...")
-        fig3 = self.plot_attitude()
-        
-        # 4. 轨迹曲线
-        print("4. Plotting trajectories...")
-        fig4 = self.plot_trajectory()
-        
-        # 保存图片
-        if save_dir is not None:
-            save_path = Path(save_dir)
-            save_path.mkdir(exist_ok=True)
-            
-            log_name = self.log_file_path.stem  # 获取不带扩展名的文件名
-            
-            fig1_path = save_path / f'{log_name}_position_response.png'
-            fig2_path = save_path / f'{log_name}_tracking_error.png'
-            fig3_path = save_path / f'{log_name}_attitude.png'
-            fig4_path = save_path / f'{log_name}_trajectory.png'
-            
-            print(f"\nSaving plots to: {save_path}")
-            fig1.savefig(fig1_path, dpi=300, bbox_inches='tight')
-            print(f"  - {fig1_path.name}")
-            fig2.savefig(fig2_path, dpi=300, bbox_inches='tight')
-            print(f"  - {fig2_path.name}")
-            fig3.savefig(fig3_path, dpi=300, bbox_inches='tight')
-            print(f"  - {fig3_path.name}")
-            fig4.savefig(fig4_path, dpi=300, bbox_inches='tight')
-            print(f"  - {fig4_path.name}")
-        
-        print("\nAll plots generated successfully!")
+def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
+    """双行位置响应图：上排 log0，下排 log1（各 1x3）。"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle('Position Response (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
+
+    axes_labels = ['X Axis', 'Y Axis', 'Z Axis']
+    pos_keys = ['x', 'y', 'z']
+    des_keys = ['x_des', 'y_des', 'z_des']
+
+    # 上排：_0
+    for i, (ax, label, pos_key, des_key) in enumerate(zip(axes[0], axes_labels, pos_keys, des_keys)):
+        ax.plot(pl0.data['time'], pl0.data[pos_key], 'b-', linewidth=2, label='Actual')
+        ax.plot(pl0.data['time'], pl0.data[des_key], 'r--', linewidth=2, label='Desired')
+        ax.set_ylabel('Position (m)', fontsize=11)
+        ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=9)
+    # 下排：_1
+    for i, (ax, label, pos_key, des_key) in enumerate(zip(axes[1], axes_labels, pos_keys, des_keys)):
+        ax.plot(pl1.data['time'], pl1.data[pos_key], 'b-', linewidth=2, label='Actual')
+        ax.plot(pl1.data['time'], pl1.data[des_key], 'r--', linewidth=2, label='Desired')
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Position (m)', fontsize=11)
+        ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
+def _plot_tracking_error_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
+    """双行跟踪误差图。"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle('Tracking Error (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
+
+    axes_labels = ['X Error', 'Y Error', 'Z Error']
+    error_keys = ['error_x', 'error_y', 'error_z']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+    # 上排：_0
+    for i, (ax, label, error_key, color) in enumerate(zip(axes[0], axes_labels, error_keys, colors)):
+        ax.plot(pl0.data['time'], pl0.data[error_key], color=color, linewidth=2)
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_ylabel('Error (m)', fontsize=11)
+        ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        mean_error = np.mean(np.abs(pl0.data[error_key]))
+        max_error = np.max(np.abs(pl0.data[error_key]))
+        ax.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nMax: {max_error:.3f}m',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    # 下排：_1
+    for i, (ax, label, error_key, color) in enumerate(zip(axes[1], axes_labels, error_keys, colors)):
+        ax.plot(pl1.data['time'], pl1.data[error_key], color=color, linewidth=2)
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Error (m)', fontsize=11)
+        ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        mean_error = np.mean(np.abs(pl1.data[error_key]))
+        max_error = np.max(np.abs(pl1.data[error_key]))
+        ax.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nMax: {max_error:.3f}m',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
+def _plot_attitude_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
+    """双行姿态角图。"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle('Attitude Angles (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
+
+    axes_labels = ['Roll', 'Pitch', 'Yaw']
+    attitude_keys = ['roll', 'pitch', 'yaw']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+    # 上排：_0
+    for i, (ax, label, att_key, color) in enumerate(zip(axes[0], axes_labels, attitude_keys, colors)):
+        angle_deg = pl0.data[att_key]
+        ax.plot(pl0.data['time'], angle_deg, color=color, linewidth=2)
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_ylabel('Angle (deg)', fontsize=11)
+        ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        mean_angle = np.mean(np.abs(angle_deg))
+        max_angle = np.max(np.abs(angle_deg))
+        ax.text(0.02, 0.98, f'Mean: {mean_angle:.2f}°\nMax: {max_angle:.2f}°',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    # 下排：_1
+    for i, (ax, label, att_key, color) in enumerate(zip(axes[1], axes_labels, attitude_keys, colors)):
+        angle_deg = pl1.data[att_key]
+        ax.plot(pl1.data['time'], angle_deg, color=color, linewidth=2)
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Angle (deg)', fontsize=11)
+        ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        mean_angle = np.mean(np.abs(angle_deg))
+        max_angle = np.max(np.abs(angle_deg))
+        ax.text(0.02, 0.98, f'Mean: {mean_angle:.2f}°\nMax: {max_angle:.2f}°',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
+def _set_equal_3d(ax, x, y, z):
+    max_range = np.array([
+        x.max() - x.min(),
+        y.max() - y.min(),
+        z.max() - z.min()
+    ]).max() / 2.0
+    mid_x = (x.max() + x.min()) * 0.5
+    mid_y = (y.max() + y.min()) * 0.5
+    mid_z = (z.max() + z.min()) * 0.5
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+
+def _plot_trajectory_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
+    """双行轨迹图：每行包含 3D 轨迹和 XY 平面轨迹。"""
+    fig = plt.figure(figsize=(14, 10))
+
+    # 顶行（log0）
+    ax1 = fig.add_subplot(221, projection='3d')
+    ax2 = fig.add_subplot(222)
+    # 底行（log1）
+    ax3 = fig.add_subplot(223, projection='3d')
+    ax4 = fig.add_subplot(224)
+
+    # log0 3D
+    ax1.plot(pl0.data['x'], pl0.data['y'], pl0.data['z'], 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax1.plot(pl0.data['x_des'], pl0.data['y_des'], pl0.data['z_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax1.scatter(pl0.data['x'][0], pl0.data['y'][0], pl0.data['z'][0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax1.scatter(pl0.data['x'][-1], pl0.data['y'][-1], pl0.data['z'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax1.set_xlabel('X (m)', fontsize=11); ax1.set_ylabel('Y (m)', fontsize=11); ax1.set_zlabel('Z (m)', fontsize=11)
+    ax1.set_title('3D Trajectory (log0)', fontsize=12, fontweight='bold')
+    ax1.legend(loc='best', fontsize=9); ax1.grid(True, alpha=0.3)
+    _set_equal_3d(ax1, pl0.data['x'], pl0.data['y'], pl0.data['z'])
+
+    # log0 XY
+    ax2.plot(pl0.data['x'], pl0.data['y'], 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax2.plot(pl0.data['x_des'], pl0.data['y_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax2.scatter(pl0.data['x'][0], pl0.data['y'][0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax2.scatter(pl0.data['x'][-1], pl0.data['y'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax2.set_xlabel('X (m)', fontsize=11); ax2.set_ylabel('Y (m)', fontsize=11)
+    ax2.set_title('XY Plane Trajectory (log0)', fontsize=12, fontweight='bold')
+    ax2.legend(loc='best', fontsize=9); ax2.grid(True, alpha=0.3); ax2.axis('equal')
+
+    # log1 3D
+    ax3.plot(pl1.data['x'], pl1.data['y'], pl1.data['z'], 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax3.plot(pl1.data['x_des'], pl1.data['y_des'], pl1.data['z_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax3.scatter(pl1.data['x'][0], pl1.data['y'][0], pl1.data['z'][0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax3.scatter(pl1.data['x'][-1], pl1.data['y'][-1], pl1.data['z'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax3.set_xlabel('X (m)', fontsize=11); ax3.set_ylabel('Y (m)', fontsize=11); ax3.set_zlabel('Z (m)', fontsize=11)
+    ax3.set_title('3D Trajectory (log1)', fontsize=12, fontweight='bold')
+    ax3.legend(loc='best', fontsize=9); ax3.grid(True, alpha=0.3)
+    _set_equal_3d(ax3, pl1.data['x'], pl1.data['y'], pl1.data['z'])
+
+    # log1 XY
+    ax4.plot(pl1.data['x'], pl1.data['y'], 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax4.plot(pl1.data['x_des'], pl1.data['y_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax4.scatter(pl1.data['x'][0], pl1.data['y'][0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax4.scatter(pl1.data['x'][-1], pl1.data['y'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax4.set_xlabel('X (m)', fontsize=11); ax4.set_ylabel('Y (m)', fontsize=11)
+    ax4.set_title('XY Plane Trajectory (log1)', fontsize=12, fontweight='bold')
+    ax4.legend(loc='best', fontsize=9); ax4.grid(True, alpha=0.3); ax4.axis('equal')
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_dir=None):
+    """针对两份日志，绘制并可选保存全部图表。"""
+    for pl in (plotter0, plotter1):
+        if pl.data is None:
+            pl.load_data()
+
+    # 使用英文标签，避免中文字体问题
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+    plt.rcParams['axes.unicode_minus'] = False
+
+    print("\nGenerating dual plots...")
+
+    # 1. 位置响应曲线（双行）
+    print("1. Plotting dual position response...")
+    fig1 = _plot_position_response_dual(plotter0, plotter1)
+
+    # 2. 跟踪误差曲线（双行）
+    print("2. Plotting dual tracking error...")
+    fig2 = _plot_tracking_error_dual(plotter0, plotter1)
+
+    # 3. 姿态角曲线（双行）
+    print("3. Plotting dual attitude angles...")
+    fig3 = _plot_attitude_dual(plotter0, plotter1)
+
+    # 4. 轨迹曲线（双行：每行 3D+XY）
+    print("4. Plotting dual trajectories...")
+    fig4 = _plot_trajectory_dual(plotter0, plotter1)
+
+    if save_dir is not None:
+        save_path = Path(save_dir)
+        save_path.mkdir(exist_ok=True, parents=True)
+
+        stem0 = plotter0.log_file_path.stem
+        stem1 = plotter1.log_file_path.stem
+
+        # 尝试提取共同前缀（去掉最后的 _0/_1）
+        def common_base(s0, s1):
+            base0 = s0.rsplit('_', 1)[0]
+            base1 = s1.rsplit('_', 1)[0]
+            return base0 if base0 == base1 else f"{s0}__{s1}"
+
+        base = common_base(stem0, stem1)
+
+        fig1_path = save_path / f'{base}_position_response_dual.png'
+        fig2_path = save_path / f'{base}_tracking_error_dual.png'
+        fig3_path = save_path / f'{base}_attitude_dual.png'
+        fig4_path = save_path / f'{base}_trajectory_dual.png'
+
+        print(f"\nSaving plots to: {save_path}")
+        fig1.savefig(fig1_path, dpi=300, bbox_inches='tight'); print(f"  - {fig1_path.name}")
+        fig2.savefig(fig2_path, dpi=300, bbox_inches='tight'); print(f"  - {fig2_path.name}")
+        fig3.savefig(fig3_path, dpi=300, bbox_inches='tight'); print(f"  - {fig3_path.name}")
+        fig4.savefig(fig4_path, dpi=300, bbox_inches='tight'); print(f"  - {fig4_path.name}")
+
+    print("\nAll dual plots generated successfully!")
 
 
 def main():
@@ -274,8 +312,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Flight Log Plotting Tool')
-    parser.add_argument('log_file', type=str, nargs='?', 
-                       help='Log file path (CSV format)')
+    # 可选指定两份日志；若未指定则自动在 log 目录里选择最新一对 (_0 与 _1)
+    parser.add_argument('--log0', type=str, default=None, help='Path to log file ending with _0.csv')
+    parser.add_argument('--log1', type=str, default=None, help='Path to log file ending with _1.csv')
     parser.add_argument('--save-dir', type=str, default=None,
                        help='Directory to save plots (default: log/plots)')
     parser.add_argument('--list', action='store_true',
@@ -285,7 +324,7 @@ def main():
     
     args = parser.parse_args()
     
-    # 获取log目录路径
+    # 获取log目录路径（源码同级：.../ns_controller/log）
     current_file = Path(__file__).resolve()
     package_dir = current_file.parent.parent
     log_dir = package_dir / 'log'
@@ -305,45 +344,64 @@ def main():
             print(f"日志目录不存在: {log_dir}")
         return
     
-    # 确定日志文件路径
-    if args.log_file:
-        log_file_path = Path(args.log_file)
+    # 选择两份日志：优先使用 --log0/--log1，否则在 log_dir 自动匹配最新一对
+    def find_latest_pair(directory: Path):
+        csvs = list(directory.glob('*.csv'))
+        if not csvs:
+            return None
+        # 收集以 _0 / _1 结尾的文件及其基名
+        pair_map = {}
+        for f in csvs:
+            stem = f.stem  # e.g., 2025-11-20_1532_0
+            if stem.endswith('_0') or stem.endswith('_1'):
+                base = stem[:-2]  # 去掉后缀 _0/_1
+                suffix = stem[-1]
+                rec = pair_map.get(base, {'0': None, '1': None, 'mtime': 0.0})
+                rec[suffix] = f
+                # 记录该基名的最近修改时间（最大者）
+                rec['mtime'] = max(rec['mtime'], f.stat().st_mtime)
+                pair_map[base] = rec
+        # 选择同时拥有 0 和 1 的最近的一对
+        candidates = [ (base, rec) for base, rec in pair_map.items() if rec['0'] and rec['1'] ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[1]['mtime'])
+        base, rec = candidates[-1]
+        return rec['0'], rec['1']
+
+    if args.log0 and args.log1:
+        log0 = Path(args.log0)
+        log1 = Path(args.log1)
+        if not log0.exists() or not log1.exists():
+            print("Error: --log0 or --log1 path does not exist.")
+            sys.exit(1)
     else:
-        # 如果没有指定文件，使用最新的日志文件（按修改时间排序）
-        if log_dir.exists():
-            log_files = list(log_dir.glob('*.csv'))
-            if log_files:
-                # 按修改时间排序，最新的在最后
-                log_files.sort(key=lambda f: f.stat().st_mtime)
-                log_file_path = log_files[-1]
-                print(f"No log file specified, using the latest: {log_file_path.name}")
-            else:
-                print(f"Error: No log files found in {log_dir}")
-                print("Use --list to see available log files")
-                sys.exit(1)
-        else:
+        if not log_dir.exists():
             print(f"Error: Log directory does not exist: {log_dir}")
             sys.exit(1)
+        pair = find_latest_pair(log_dir)
+        if not pair:
+            print(f"Error: No matched latest pair (*_0.csv & *_1.csv) found in {log_dir}")
+            print("Use --list to see available log files")
+            sys.exit(1)
+        log0, log1 = pair
+        print(f"Using latest pair: {log0.name}  |  {log1.name}")
     
     try:
         # 创建绘图器并绘制
-        plotter = FlightLogPlotter(log_file_path)
-        plotter.load_data()
-        
-        # 如果没有指定保存目录，默认保存到log目录下的plots子目录
-        if args.save_dir is None:
-            save_dir = log_dir / 'plots'
-        else:
-            save_dir = args.save_dir
-        
+        plotter0 = FlightLogPlotter(log0)
+        plotter1 = FlightLogPlotter(log1)
+
+        # 如果没有指定保存目录，默认保存到 log 目录下的 plots 子目录
+        save_dir = (log_dir / 'plots') if args.save_dir is None else Path(args.save_dir)
+
         # 设置不显示图形窗口
         if args.no_show:
             import matplotlib
             matplotlib.use('Agg')
-        
-        plotter.plot_all(save_dir=save_dir)
-        
-        # 显示图形窗口（仅在非no-show模式）
+
+        plot_all_dual(plotter0, plotter1, save_dir=save_dir)
+
         if not args.no_show:
             plt.show()
         
