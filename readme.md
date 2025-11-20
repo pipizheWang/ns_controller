@@ -35,8 +35,8 @@ conda activate torch
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 
-ros2 service call /uav0/mavros/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOARD'}"
-ros2 service call /uav1/mavros/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOARD'}"
+ros2 service call /uav0/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOARD'}"
+ros2 service call /uav1/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOARD'}"
 
 ros2 run nl_controller traj_controller_NL0
 ros2 run nl_controller traj_controller_NL1
@@ -44,8 +44,8 @@ ros2 run nl_controller traj_controller_NL1
 ros2 param set /traj_controller_uav0 traj_mode true
 ros2 param set /traj_controller_uav1 traj_mode true
 
-ros2 service call /uav0/mavros/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
-ros2 service call /uav1/mavros/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
+ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
+ros2 service call /uav1/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 
 
 

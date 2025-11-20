@@ -43,14 +43,14 @@ class TrajController(Node):
         qos_best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         qos_reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
-        # 订阅/发布到 UAV0 命名空间下的 MAVROS 话题
+        # 订阅/发布到 UAV0 命名空间下的话题（无 mavros 前缀，根据实际 topic 列表）
         self.pa_sub_ = self.create_subscription(
-            PoseStamped, '/uav0/mavros/local_position/pose', self.pa_cb, qos_best_effort)
+            PoseStamped, '/uav0/local_position/pose', self.pa_cb, qos_best_effort)
         self.velo_sub_ = self.create_subscription(
-            TwistStamped, '/uav0/mavros/local_position/velocity_local', self.velo_cb, qos_best_effort)
+            TwistStamped, '/uav0/local_position/velocity_local', self.velo_cb, qos_best_effort)
 
         self.controller_pub_ = self.create_publisher(
-            AttitudeTarget, '/uav0/mavros/setpoint_raw/attitude', qos_reliable)
+            AttitudeTarget, '/uav0/setpoint_raw/attitude', qos_reliable)
 
         self.controller_timer_ = self.create_timer(1 / self.control_rate, self.controller_cb)
 
