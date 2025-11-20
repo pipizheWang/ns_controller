@@ -20,6 +20,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'traj_controller_NL0 = ns_controller.traj_controller_NL0:main',
+            'traj_controller_NL1 = ns_controller.traj_controller_NL1:main',
+
         ],
     },
 )
