@@ -67,11 +67,18 @@ class TrajController(Node):
         self.setup_flight_log()
 
     def setup_flight_log(self):
-        """初始化飞行日志记录（保存到包内 log/ 目录）"""
-        # 将日志保存在当前包目录下，避免依赖环境变量
-        package_dir = Path(__file__).resolve().parent  # .../ns_controller
-        log_dir = package_dir / 'log'
-        log_dir.mkdir(exist_ok=True)
+
+        def resolve_source_log_dir():
+            current = Path(__file__).resolve()
+            for parent in current.parents:
+                if parent.name == 'px4_ws':  # 工作空间根目录
+                    candidate = parent / 'src' / 'ns_controller' / 'ns_controller' / 'log'
+                    return candidate
+            # 兜底：使用当前工作目录
+            return Path.cwd() / 'log'
+
+        log_dir = resolve_source_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         # 生成带时间戳的文件名（精确到分钟）
         timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
