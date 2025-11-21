@@ -5,12 +5,12 @@ class TargetTraj:
     """
     双机目标轨迹生成：
     - FLAG=0: UAV0，高度 z=5.0 m
-    - FLAG=1: UAV1，高度 z=10.0 m
+    - FLAG=1: UAV1，高度 z=5.5 m
 
     两架飞机在水平面上的轨迹完全一致，均为圆轨迹：
       x = R*sin(w*t)
       y = R*(1 - cos(w*t))
-      z = {5.0 | 10.0}
+      z = {5.0 | 5.5}
       yaw = 0.0
 
     若 t < 0，视为尚未开始跟踪，保持在对应高度的起始点 (0,0,z)。
@@ -25,7 +25,7 @@ class TargetTraj:
         if self.FLAG == 0:
             self.h_default = 5.0
         elif self.FLAG == 1:
-            self.h_default = 10.0
+            self.h_default = 5.5
         else:
             # 兜底：未知 FLAG 时按 UAV0 处理
             self.h_default = 5.0

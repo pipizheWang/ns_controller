@@ -202,7 +202,7 @@ class TrajectoryAnimator:
         
         self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        self.ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        self.ax.set_zlim(4.5, 6.0)  # 固定z轴范围为4.5-6米
         
         # 设置视角
         self.ax.view_init(elev=25, azim=45)
@@ -458,7 +458,7 @@ class DualTrajectoryAnimator:
         mid_z = (all_z.max() + all_z.min()) * 0.5
         self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        self.ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        self.ax.set_zlim(4.5, 6.0)  # 固定z轴范围为4.5-6米
 
         self.ax.view_init(elev=25, azim=45)
 

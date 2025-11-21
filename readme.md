@@ -8,7 +8,7 @@ export PX4_SYS_AUTOSTART=4001
 export PX4_GZ_MODEL_POSE="0,0,5.0,0,0,0"
 ./build/px4_sitl_default/bin/px4 -i 0
 
-export PX4_GZ_MODEL_POSE="0,0,10.0,0,0,0"
+export PX4_GZ_MODEL_POSE="0,0,5.5,0,0,0"
 ./build/px4_sitl_default/bin/px4 -i 1
 
 # 启动地面站
@@ -41,13 +41,23 @@ ros2 service call /uav1/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOAR
 ros2 run ns_controller traj_controller_NL0
 ros2 run ns_controller traj_controller_NL1
 
-ros2 param set /traj_controller_NL0 traj_mode true
-ros2 param set /traj_controller_NL1 traj_mode true
+ros2 run ns_controller f_est
+ros2 run ns_controller traj_controller_NS0
+ros2 run ns_controller traj_controller_NS1
 
 ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 ros2 service call /uav1/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 
+    ros2 param set /traj_controller_NL0 traj_mode true
+    ros2 param set /traj_controller_NL1 traj_mode true
+    ros2 param set /traj_controller_NS0 traj_mode true
+    ros2 param set /traj_controller_NS1 traj_mode true
 
+ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NS
+ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NL
+
+ros2 service call /sync_traj_mode std_srvs/srv/SetBool "{data: true}"
+ros2 service call /sync_traj_mode std_srvs/srv/SetBool "{data: false}"
 
 colcon build --packages-select ns_controller
 

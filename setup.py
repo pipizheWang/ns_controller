@@ -22,7 +22,10 @@ setup(
         'console_scripts': [
             'traj_controller_NL0 = ns_controller.traj_controller_NL0:main',
             'traj_controller_NL1 = ns_controller.traj_controller_NL1:main',
-
+            'f_est = ns_controller.f_est:main',
+            'traj_controller_NS0 = ns_controller.traj_controller_NS0:main',
+            'traj_controller_NS1 = ns_controller.traj_controller_NS1:main',
+            'traj_sync = ns_controller.traj_sync:main',
         ],
     },
 )

@@ -59,6 +59,11 @@ class FlightLogPlotter:
             'z_des': np.array([float(row['z_des']) for row in rows]),
         }
         
+        # 检查是否有扰动力数据列（NS控制器生成的日志）
+        self.has_aero_data = 'Fa_z' in rows[0]
+        if self.has_aero_data:
+            self.data['Fa_z'] = np.array([float(row['Fa_z']) for row in rows])
+        
         # 将时间戳转换为相对时间（从0开始）
         self.data['time'] = self.data['timestamp'] - self.data['timestamp'][0]
         
@@ -68,6 +73,8 @@ class FlightLogPlotter:
         self.data['error_z'] = self.data['z'] - self.data['z_des']
         
         print(f"成功加载 {len(rows)} 条数据记录")
+        if self.has_aero_data:
+            print(f"  检测到气动扰动力数据 (Fa_z)")
         print(f"飞行时长: {self.data['time'][-1]:.2f} 秒")
         
 def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
@@ -197,6 +204,53 @@ def _set_equal_3d(ax, x, y, z):
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
 
+def _plot_aero_force_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
+    """
+    绘制气动扰动力响应曲线（仅当日志包含 Fa_z 时）
+    布局：1行2列，左图为 log0，右图为 log1
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle('Aerodynamic Force Response', fontsize=14, fontweight='bold')
+
+    # 将 Fa_z 从牛顿（N）转换为克力（gf）: 1 N = 1000/9.8 gf ≈ 102.04 gf
+    conversion_factor = 1000.0 / 9.8
+
+    # 左图：log0
+    ax = axes[0]
+    Fa_z_gf_0 = pl0.data['Fa_z'] * conversion_factor
+    ax.plot(pl0.data['time'], Fa_z_gf_0, 'b-', linewidth=2, label='Estimated Fa_z')
+    ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+    ax.set_xlabel('Time (s)', fontsize=11)
+    ax.set_ylabel('Fa_z (gf)', fontsize=11)
+    ax.set_title('Aerodynamic Force (log0)', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=10)
+    mean_fa = np.mean(np.abs(Fa_z_gf_0))
+    max_fa = np.max(np.abs(Fa_z_gf_0))
+    ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
+            transform=ax.transAxes, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    # 右图：log1
+    ax = axes[1]
+    Fa_z_gf_1 = pl1.data['Fa_z'] * conversion_factor
+    ax.plot(pl1.data['time'], Fa_z_gf_1, 'b-', linewidth=2, label='Estimated Fa_z')
+    ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+    ax.set_xlabel('Time (s)', fontsize=11)
+    ax.set_ylabel('Fa_z (gf)', fontsize=11)
+    ax.set_title('Aerodynamic Force (log1)', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=10)
+    mean_fa = np.mean(np.abs(Fa_z_gf_1))
+    max_fa = np.max(np.abs(Fa_z_gf_1))
+    ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
+            transform=ax.transAxes, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
 def _plot_trajectory_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
     """双行轨迹图：每行包含 3D 轨迹和 XY 平面轨迹。"""
     fig = plt.figure(figsize=(14, 10))
@@ -278,6 +332,14 @@ def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_d
     print("4. Plotting dual trajectories...")
     fig4 = _plot_trajectory_dual(plotter0, plotter1)
 
+    # 5. 气动扰动力曲线（仅当日志包含相关数据时）
+    fig5 = None
+    if plotter0.has_aero_data and plotter1.has_aero_data:
+        print("5. Plotting aerodynamic force response...")
+        fig5 = _plot_aero_force_dual(plotter0, plotter1)
+    else:
+        print("5. Skipping aerodynamic force plot (no Fa_z data in logs)")
+
     if save_dir is not None:
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True, parents=True)
@@ -303,6 +365,11 @@ def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_d
         fig2.savefig(fig2_path, dpi=300, bbox_inches='tight'); print(f"  - {fig2_path.name}")
         fig3.savefig(fig3_path, dpi=300, bbox_inches='tight'); print(f"  - {fig3_path.name}")
         fig4.savefig(fig4_path, dpi=300, bbox_inches='tight'); print(f"  - {fig4_path.name}")
+        
+        # 保存气动力图（如果有）
+        if fig5 is not None:
+            fig5_path = save_path / f'{base}_aero_force_dual.png'
+            fig5.savefig(fig5_path, dpi=300, bbox_inches='tight'); print(f"  - {fig5_path.name}")
 
     print("\nAll dual plots generated successfully!")
 
