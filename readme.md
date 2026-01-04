@@ -13,13 +13,13 @@ export PX4_SYS_AUTOSTART=4001
 
 ### 启动 UAV0
 ```bash
-export PX4_GZ_MODEL_POSE="0,0,5.0,0,0,0"
+export PX4_GZ_MODEL_POSE="-2,0,5.0,0,0,0"
 ./build/px4_sitl_default/bin/px4 -i 0
 ```
 
 ### 启动 UAV1
 ```bash
-export PX4_GZ_MODEL_POSE="0,0,5.5,0,0,0"
+export PX4_GZ_MODEL_POSE="2,0,5.5,0,0,0"
 ./build/px4_sitl_default/bin/px4 -i 1
 ```
 
@@ -75,21 +75,21 @@ ros2 service call /uav1/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'OFFBOAR
 
 #### 非线性控制器 (NL)
 ```bash
-ros2 run ns_controller traj_controller_NL0
 ros2 run ns_controller traj_controller_NL1
+ros2 run ns_controller traj_controller_NL0
 ```
 
 #### 神经符号控制器 (NS)
 ```bash
 ros2 run ns_controller f_est
-ros2 run ns_controller traj_controller_NS0
 ros2 run ns_controller traj_controller_NS1
+ros2 run ns_controller traj_controller_NS0
 ```
 
 ### 解锁电机
 ```bash
-ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 ros2 service call /uav1/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
+ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 ```
 
 ### 启动轨迹同步
