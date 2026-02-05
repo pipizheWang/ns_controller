@@ -115,20 +115,16 @@ def Fa(Data, m, g, p_00, p_10, p_01, p_20, p_11):
     force_pwm_2 = p_00 + p_10 * Data['pwm'][:, 1] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 1]**2 + p_11 * Data['vol'] * Data['pwm'][:, 1]
     force_pwm_3 = p_00 + p_10 * Data['pwm'][:, 2] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 2]**2 + p_11 * Data['vol'] * Data['pwm'][:, 2]
     force_pwm_4 = p_00 + p_10 * Data['pwm'][:, 3] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 3]**2 + p_11 * Data['vol'] * Data['pwm'][:, 3]
-    thrust_pwm = force_pwm_1 + force_pwm_2 + force_pwm_3 + force_pwm_4 # gram
+    thrust_pwm = force_pwm_1 + force_pwm_2 + force_pwm_3 + force_pwm_4 # N
 
     Fa = np.zeros([Data['time'].shape[0], 3])
-    force_world = np.zeros([Data['time'].shape[0], 3])
     for i in range(Data['time'].shape[0]):
-        Fa[i, :] = m * Data['acc_imu'][i, :] / 1000 - thrust_pwm[i] / 1000 * g * R[i, :, 2] # Newton
-        force_world[i, :] = thrust_pwm[i] / 1000 * g * R[i, :, 2] # Newton
+        Fa[i, :] = m * Data['acc_imu'][i, :] - thrust_pwm[i]  * R[i, :, 2] - np.array([0, 0, -m*g]) # Newton
     
     Data['fa_imu'] = Fa
-
     
     return Data
 
-# Get numpy data input and output pair for L2L scenario
 def get_data(D1, D2, typ='fa_imu'):
 
     g = 9.81
@@ -194,27 +190,19 @@ def preprocess_two_uav_data(uav1_csv, uav2_csv, save_path='./'):
     # 计算气动力（需要你的无人机质量和推力模型参数）
     g = 9.81
     m = 2000  # 克
-    factor = 1000 / g  # 单位转换系数：N -> gram (utils.py会做 /1000*g 转回N)
     
     # 原始拟合参数（单位：N）
-    p_00_N = 354.716813
-    p_10_N = -0.483469
-    p_01_N = -19.170488
-    p_20_N = 8.183327e-05
-    p_11_N = 0.022760
+    p_00 = 354.716813
+    p_10 = -0.483469
+    p_01 = -19.170488
+    p_20 = 8.183327e-05
+    p_11 = 0.022760
     
-    # 转换为utils.py期望的参数（单位：gram）
-    C_00 = p_00_N * factor
-    C_10 = p_10_N * factor
-    C_01 = p_01_N * factor
-    C_20 = p_20_N * factor
-    C_11 = p_11_N * factor
-    
-    Data1 = Fa(Data1_int, m, g, C_00, C_10, C_01, C_20, C_11)
-    Data2 = Fa(Data2_int, m, g, C_00, C_10, C_01, C_20, C_11)
+    Data1 = Fa(Data1_int, m, g, p_00, p_10, p_01, p_20, p_11)
+    Data2 = Fa(Data2_int, m, g, p_00, p_10, p_01, p_20, p_11)
     
     # 生成L2L训练数据对（下方飞机受上方飞机干扰）
-    data_input, data_output = get_data(D1=Data1, D2=Data2, typ='fa_delay')
+    data_input, data_output = get_data(D1=Data1, D2=Data2, typ='fa_imu')
     
     # 保存为numpy格式
     np.save(f'{save_path}/data_input_L2L.npy', data_input)
