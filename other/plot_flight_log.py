@@ -28,6 +28,9 @@ class FlightLogPlotter:
         """
         self.log_file_path = Path(log_file_path)
         self.data = None
+        self.has_aero_data = False
+        # 时间戳对齐相关属性
+        self.aligned_indices = None  # 对齐后的有效索引范围
         
     def load_data(self):
         """从CSV文件加载飞行日志数据"""
@@ -72,32 +75,102 @@ class FlightLogPlotter:
         self.data['error_y'] = self.data['y'] - self.data['y_des']
         self.data['error_z'] = self.data['z'] - self.data['z_des']
         
+        # 初始化对齐索引（暂未设置）
+        self.aligned_indices = (0, len(rows))
+        
         print(f"成功加载 {len(rows)} 条数据记录")
         if self.has_aero_data:
             print(f"  检测到气动扰动力数据 (Fa_z)")
         print(f"飞行时长: {self.data['time'][-1]:.2f} 秒")
+    
+    def get_aligned_data(self):
+        """获取对齐后的数据索引范围"""
+        if self.aligned_indices is None:
+            return 0, len(self.data['x'])
+        return self.aligned_indices
+def _align_timestamps_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter):
+    """
+    根据时间戳对齐两个日志文件。
+    处理整数秒偏差和采样率不一致的问题。
+    
+    Args:
+        plotter0: 第一个日志绘图器
+        plotter1: 第二个日志绘图器
+    """
+    ts0 = plotter0.data['timestamp']
+    ts1 = plotter1.data['timestamp']
+    
+    # 粗对齐：找到两个日志时间戳的大致对齐点
+    # 取两个日志开始时间中较晚的作为对齐起点
+    start_ts0 = ts0[0]
+    start_ts1 = ts1[0]
+    aligned_start = max(start_ts0, start_ts1)
+    
+    # 取两个日志结束时间中较早的作为对齐终点
+    end_ts0 = ts0[-1]
+    end_ts1 = ts1[-1]
+    aligned_end = min(end_ts0, end_ts1)
+    
+    # 检查是否有重叠
+    if aligned_start >= aligned_end:
+        raise ValueError(
+            f"两个日志没有足够的时间重叠。"
+            f"log0: [{start_ts0:.3f}, {end_ts0:.3f}], "
+            f"log1: [{start_ts1:.3f}, {end_ts1:.3f}]"
+        )
+    
+    # 计算时间偏差（log1相对于log0）
+    time_offset = start_ts1 - start_ts0
+    
+    # 找到对齐起点和终点对应的索引
+    idx0_start = np.searchsorted(ts0, aligned_start)
+    idx0_end = np.searchsorted(ts0, aligned_end)
+    idx1_start = np.searchsorted(ts1, aligned_start)
+    idx1_end = np.searchsorted(ts1, aligned_end)
+    
+    # 设置对齐后的索引范围
+    plotter0.aligned_indices = (idx0_start, idx0_end)
+    plotter1.aligned_indices = (idx1_start, idx1_end)
+    
+    aligned_duration = aligned_end - aligned_start
+    
+    print(f"\n时间戳对齐信息:")
+    print(f"  log0 起始时间戳: {start_ts0:.6f}")
+    print(f"  log1 起始时间戳: {start_ts1:.6f}")
+    print(f"  时间偏差 (log1 - log0): {time_offset:.6f} 秒")
+    print(f"  对齐时间范围: [{aligned_start:.3f}, {aligned_end:.3f}]")
+    print(f"  对齐总时长: {aligned_duration:.2f} 秒")
+    print(f"  log0 对齐数据范围: [{idx0_start}, {idx0_end}] ({idx0_end - idx0_start} 个点)")
+    print(f"  log1 对齐数据范围: [{idx1_start}, {idx1_end}] ({idx1_end - idx1_start} 个点)")
+
         
 def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
-    """双行位置响应图：上排 log0，下排 log1（各 1x3）。"""
+    """双行位置响应图：上排 log0，下排 log1（各 1x3）。使用对齐后的数据范围。"""
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     fig.suptitle('Position Response (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
 
     axes_labels = ['X Axis', 'Y Axis', 'Z Axis']
     pos_keys = ['x', 'y', 'z']
     des_keys = ['x_des', 'y_des', 'z_des']
+    
+    # 获取对齐数据范围
+    idx0_start, idx0_end = pl0.aligned_indices
+    idx1_start, idx1_end = pl1.aligned_indices
 
-    # 上排：_0
+    # 上排：_0（仅绘制对齐范围内的数据）
     for i, (ax, label, pos_key, des_key) in enumerate(zip(axes[0], axes_labels, pos_keys, des_keys)):
-        ax.plot(pl0.data['time'], pl0.data[pos_key], 'b-', linewidth=2, label='Actual')
-        ax.plot(pl0.data['time'], pl0.data[des_key], 'r--', linewidth=2, label='Desired')
+        time_slice = pl0.data['time'][idx0_start:idx0_end]
+        ax.plot(time_slice, pl0.data[pos_key][idx0_start:idx0_end], 'b-', linewidth=2, label='Actual')
+        ax.plot(time_slice, pl0.data[des_key][idx0_start:idx0_end], 'r--', linewidth=2, label='Desired')
         ax.set_ylabel('Position (m)', fontsize=11)
         ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=9)
-    # 下排：_1
+    # 下排：_1（仅绘制对齐范围内的数据）
     for i, (ax, label, pos_key, des_key) in enumerate(zip(axes[1], axes_labels, pos_keys, des_keys)):
-        ax.plot(pl1.data['time'], pl1.data[pos_key], 'b-', linewidth=2, label='Actual')
-        ax.plot(pl1.data['time'], pl1.data[des_key], 'r--', linewidth=2, label='Desired')
+        time_slice = pl1.data['time'][idx1_start:idx1_end]
+        ax.plot(time_slice, pl1.data[pos_key][idx1_start:idx1_end], 'b-', linewidth=2, label='Actual')
+        ax.plot(time_slice, pl1.data[des_key][idx1_start:idx1_end], 'r--', linewidth=2, label='Desired')
         ax.set_xlabel('Time (s)', fontsize=11)
         ax.set_ylabel('Position (m)', fontsize=11)
         ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
@@ -109,37 +182,45 @@ def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
 
 
 def _plot_tracking_error_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
-    """双行跟踪误差图。"""
+    """双行跟踪误差图。使用对齐后的数据范围。"""
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     fig.suptitle('Tracking Error (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
 
     axes_labels = ['X Error', 'Y Error', 'Z Error']
     error_keys = ['error_x', 'error_y', 'error_z']
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    
+    # 获取对齐数据范围
+    idx0_start, idx0_end = pl0.aligned_indices
+    idx1_start, idx1_end = pl1.aligned_indices
 
     # 上排：_0
     for i, (ax, label, error_key, color) in enumerate(zip(axes[0], axes_labels, error_keys, colors)):
-        ax.plot(pl0.data['time'], pl0.data[error_key], color=color, linewidth=2)
+        time_slice = pl0.data['time'][idx0_start:idx0_end]
+        error_slice = pl0.data[error_key][idx0_start:idx0_end]
+        ax.plot(time_slice, error_slice, color=color, linewidth=2)
         ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
         ax.set_ylabel('Error (m)', fontsize=11)
         ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        mean_error = np.mean(np.abs(pl0.data[error_key]))
-        max_error = np.max(np.abs(pl0.data[error_key]))
+        mean_error = np.mean(np.abs(error_slice))
+        max_error = np.max(np.abs(error_slice))
         ax.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nMax: {max_error:.3f}m',
                 transform=ax.transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
 
     # 下排：_1
     for i, (ax, label, error_key, color) in enumerate(zip(axes[1], axes_labels, error_keys, colors)):
-        ax.plot(pl1.data['time'], pl1.data[error_key], color=color, linewidth=2)
+        time_slice = pl1.data['time'][idx1_start:idx1_end]
+        error_slice = pl1.data[error_key][idx1_start:idx1_end]
+        ax.plot(time_slice, error_slice, color=color, linewidth=2)
         ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
         ax.set_xlabel('Time (s)', fontsize=11)
         ax.set_ylabel('Error (m)', fontsize=11)
         ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        mean_error = np.mean(np.abs(pl1.data[error_key]))
-        max_error = np.max(np.abs(pl1.data[error_key]))
+        mean_error = np.mean(np.abs(error_slice))
+        max_error = np.max(np.abs(error_slice))
         ax.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nMax: {max_error:.3f}m',
                 transform=ax.transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
@@ -149,39 +230,45 @@ def _plot_tracking_error_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
 
 
 def _plot_attitude_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
-    """双行姿态角图。"""
+    """双行姿态角图。使用对齐后的数据范围。"""
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     fig.suptitle('Attitude Angles (Top: _0, Bottom: _1)', fontsize=14, fontweight='bold')
 
     axes_labels = ['Roll', 'Pitch', 'Yaw']
     attitude_keys = ['roll', 'pitch', 'yaw']
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    
+    # 获取对齐数据范围
+    idx0_start, idx0_end = pl0.aligned_indices
+    idx1_start, idx1_end = pl1.aligned_indices
 
     # 上排：_0
     for i, (ax, label, att_key, color) in enumerate(zip(axes[0], axes_labels, attitude_keys, colors)):
-        angle_deg = pl0.data[att_key]
-        ax.plot(pl0.data['time'], angle_deg, color=color, linewidth=2)
+        time_slice = pl0.data['time'][idx0_start:idx0_end]
+        angle_slice = pl0.data[att_key][idx0_start:idx0_end]
+        ax.plot(time_slice, angle_slice, color=color, linewidth=2)
         ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
         ax.set_ylabel('Angle (deg)', fontsize=11)
         ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        mean_angle = np.mean(np.abs(angle_deg))
-        max_angle = np.max(np.abs(angle_deg))
+        mean_angle = np.mean(np.abs(angle_slice))
+        max_angle = np.max(np.abs(angle_slice))
         ax.text(0.02, 0.98, f'Mean: {mean_angle:.2f}°\nMax: {max_angle:.2f}°',
                 transform=ax.transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
 
     # 下排：_1
     for i, (ax, label, att_key, color) in enumerate(zip(axes[1], axes_labels, attitude_keys, colors)):
-        angle_deg = pl1.data[att_key]
-        ax.plot(pl1.data['time'], angle_deg, color=color, linewidth=2)
+        time_slice = pl1.data['time'][idx1_start:idx1_end]
+        angle_slice = pl1.data[att_key][idx1_start:idx1_end]
+        ax.plot(time_slice, angle_slice, color=color, linewidth=2)
         ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
         ax.set_xlabel('Time (s)', fontsize=11)
         ax.set_ylabel('Angle (deg)', fontsize=11)
         ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        mean_angle = np.mean(np.abs(angle_deg))
-        max_angle = np.max(np.abs(angle_deg))
+        mean_angle = np.mean(np.abs(angle_slice))
+        max_angle = np.max(np.abs(angle_slice))
         ax.text(0.02, 0.98, f'Mean: {mean_angle:.2f}°\nMax: {max_angle:.2f}°',
                 transform=ax.transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
@@ -208,17 +295,23 @@ def _plot_aero_force_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
     """
     绘制气动扰动力响应曲线（仅当日志包含 Fa_z 时）
     布局：1行2列，左图为 log0，右图为 log1
+    使用对齐后的数据范围。
     """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle('Aerodynamic Force Response', fontsize=14, fontweight='bold')
 
     # 将 Fa_z 从牛顿（N）转换为克力（gf）: 1 N = 1000/9.8 gf ≈ 102.04 gf
     conversion_factor = 1000.0 / 9.8
+    
+    # 获取对齐数据范围
+    idx0_start, idx0_end = pl0.aligned_indices
+    idx1_start, idx1_end = pl1.aligned_indices
 
     # 左图：log0
     ax = axes[0]
-    Fa_z_gf_0 = pl0.data['Fa_z'] * conversion_factor
-    ax.plot(pl0.data['time'], Fa_z_gf_0, 'b-', linewidth=2, label='Estimated Fa_z')
+    time_slice0 = pl0.data['time'][idx0_start:idx0_end]
+    Fa_z_gf_0 = pl0.data['Fa_z'][idx0_start:idx0_end] * conversion_factor
+    ax.plot(time_slice0, Fa_z_gf_0, 'b-', linewidth=2, label='Estimated Fa_z')
     ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
     ax.set_xlabel('Time (s)', fontsize=11)
     ax.set_ylabel('Fa_z (gf)', fontsize=11)
@@ -233,8 +326,9 @@ def _plot_aero_force_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
 
     # 右图：log1
     ax = axes[1]
-    Fa_z_gf_1 = pl1.data['Fa_z'] * conversion_factor
-    ax.plot(pl1.data['time'], Fa_z_gf_1, 'b-', linewidth=2, label='Estimated Fa_z')
+    time_slice1 = pl1.data['time'][idx1_start:idx1_end]
+    Fa_z_gf_1 = pl1.data['Fa_z'][idx1_start:idx1_end] * conversion_factor
+    ax.plot(time_slice1, Fa_z_gf_1, 'b-', linewidth=2, label='Estimated Fa_z')
     ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
     ax.set_xlabel('Time (s)', fontsize=11)
     ax.set_ylabel('Fa_z (gf)', fontsize=11)
@@ -252,8 +346,27 @@ def _plot_aero_force_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
 
 
 def _plot_trajectory_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
-    """双行轨迹图：每行包含 3D 轨迹和 XY 平面轨迹。"""
+    """双行轨迹图：每行包含 3D 轨迹和 XY 平面轨迹。使用对齐后的数据范围。"""
     fig = plt.figure(figsize=(14, 10))
+    
+    # 获取对齐数据范围
+    idx0_start, idx0_end = pl0.aligned_indices
+    idx1_start, idx1_end = pl1.aligned_indices
+    
+    # 对齐后的数据切片
+    x0_aligned = pl0.data['x'][idx0_start:idx0_end]
+    y0_aligned = pl0.data['y'][idx0_start:idx0_end]
+    z0_aligned = pl0.data['z'][idx0_start:idx0_end]
+    x0_des_aligned = pl0.data['x_des'][idx0_start:idx0_end]
+    y0_des_aligned = pl0.data['y_des'][idx0_start:idx0_end]
+    z0_des_aligned = pl0.data['z_des'][idx0_start:idx0_end]
+    
+    x1_aligned = pl1.data['x'][idx1_start:idx1_end]
+    y1_aligned = pl1.data['y'][idx1_start:idx1_end]
+    z1_aligned = pl1.data['z'][idx1_start:idx1_end]
+    x1_des_aligned = pl1.data['x_des'][idx1_start:idx1_end]
+    y1_des_aligned = pl1.data['y_des'][idx1_start:idx1_end]
+    z1_des_aligned = pl1.data['z_des'][idx1_start:idx1_end]
 
     # 顶行（log0）
     ax1 = fig.add_subplot(221, projection='3d')
@@ -263,39 +376,39 @@ def _plot_trajectory_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
     ax4 = fig.add_subplot(224)
 
     # log0 3D
-    ax1.plot(pl0.data['x'], pl0.data['y'], pl0.data['z'], 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax1.plot(pl0.data['x_des'], pl0.data['y_des'], pl0.data['z_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
-    ax1.scatter(pl0.data['x'][0], pl0.data['y'][0], pl0.data['z'][0], c='green', s=100, marker='o', label='Start', zorder=5)
-    ax1.scatter(pl0.data['x'][-1], pl0.data['y'][-1], pl0.data['z'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax1.plot(x0_aligned, y0_aligned, z0_aligned, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax1.plot(x0_des_aligned, y0_des_aligned, z0_des_aligned, 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax1.scatter(x0_aligned[0], y0_aligned[0], z0_aligned[0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax1.scatter(x0_aligned[-1], y0_aligned[-1], z0_aligned[-1], c='red', s=100, marker='s', label='End', zorder=5)
     ax1.set_xlabel('X (m)', fontsize=11); ax1.set_ylabel('Y (m)', fontsize=11); ax1.set_zlabel('Z (m)', fontsize=11)
     ax1.set_title('3D Trajectory (log0)', fontsize=12, fontweight='bold')
     ax1.legend(loc='best', fontsize=9); ax1.grid(True, alpha=0.3)
-    _set_equal_3d(ax1, pl0.data['x'], pl0.data['y'], pl0.data['z'])
+    _set_equal_3d(ax1, x0_aligned, y0_aligned, z0_aligned)
 
     # log0 XY
-    ax2.plot(pl0.data['x'], pl0.data['y'], 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax2.plot(pl0.data['x_des'], pl0.data['y_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
-    ax2.scatter(pl0.data['x'][0], pl0.data['y'][0], c='green', s=100, marker='o', label='Start', zorder=5)
-    ax2.scatter(pl0.data['x'][-1], pl0.data['y'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax2.plot(x0_aligned, y0_aligned, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax2.plot(x0_des_aligned, y0_des_aligned, 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax2.scatter(x0_aligned[0], y0_aligned[0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax2.scatter(x0_aligned[-1], y0_aligned[-1], c='red', s=100, marker='s', label='End', zorder=5)
     ax2.set_xlabel('X (m)', fontsize=11); ax2.set_ylabel('Y (m)', fontsize=11)
     ax2.set_title('XY Plane Trajectory (log0)', fontsize=12, fontweight='bold')
     ax2.legend(loc='best', fontsize=9); ax2.grid(True, alpha=0.3); ax2.axis('equal')
 
     # log1 3D
-    ax3.plot(pl1.data['x'], pl1.data['y'], pl1.data['z'], 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax3.plot(pl1.data['x_des'], pl1.data['y_des'], pl1.data['z_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
-    ax3.scatter(pl1.data['x'][0], pl1.data['y'][0], pl1.data['z'][0], c='green', s=100, marker='o', label='Start', zorder=5)
-    ax3.scatter(pl1.data['x'][-1], pl1.data['y'][-1], pl1.data['z'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax3.plot(x1_aligned, y1_aligned, z1_aligned, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax3.plot(x1_des_aligned, y1_des_aligned, z1_des_aligned, 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax3.scatter(x1_aligned[0], y1_aligned[0], z1_aligned[0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax3.scatter(x1_aligned[-1], y1_aligned[-1], z1_aligned[-1], c='red', s=100, marker='s', label='End', zorder=5)
     ax3.set_xlabel('X (m)', fontsize=11); ax3.set_ylabel('Y (m)', fontsize=11); ax3.set_zlabel('Z (m)', fontsize=11)
     ax3.set_title('3D Trajectory (log1)', fontsize=12, fontweight='bold')
     ax3.legend(loc='best', fontsize=9); ax3.grid(True, alpha=0.3)
-    _set_equal_3d(ax3, pl1.data['x'], pl1.data['y'], pl1.data['z'])
+    _set_equal_3d(ax3, x1_aligned, y1_aligned, z1_aligned)
 
     # log1 XY
-    ax4.plot(pl1.data['x'], pl1.data['y'], 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax4.plot(pl1.data['x_des'], pl1.data['y_des'], 'r--', linewidth=2, label='Desired', alpha=0.8)
-    ax4.scatter(pl1.data['x'][0], pl1.data['y'][0], c='green', s=100, marker='o', label='Start', zorder=5)
-    ax4.scatter(pl1.data['x'][-1], pl1.data['y'][-1], c='red', s=100, marker='s', label='End', zorder=5)
+    ax4.plot(x1_aligned, y1_aligned, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax4.plot(x1_des_aligned, y1_des_aligned, 'r--', linewidth=2, label='Desired', alpha=0.8)
+    ax4.scatter(x1_aligned[0], y1_aligned[0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax4.scatter(x1_aligned[-1], y1_aligned[-1], c='red', s=100, marker='s', label='End', zorder=5)
     ax4.set_xlabel('X (m)', fontsize=11); ax4.set_ylabel('Y (m)', fontsize=11)
     ax4.set_title('XY Plane Trajectory (log1)', fontsize=12, fontweight='bold')
     ax4.legend(loc='best', fontsize=9); ax4.grid(True, alpha=0.3); ax4.axis('equal')
@@ -305,16 +418,19 @@ def _plot_trajectory_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
 
 
 def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_dir=None):
-    """针对两份日志，绘制并可选保存全部图表。"""
+    """针对两份日志，绘制并可选保存全部图表。根据时间戳进行对齐。"""
     for pl in (plotter0, plotter1):
         if pl.data is None:
             pl.load_data()
+
+    # 根据时间戳对齐两个日志
+    _align_timestamps_dual(plotter0, plotter1)
 
     # 使用英文标签，避免中文字体问题
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
     plt.rcParams['axes.unicode_minus'] = False
 
-    print("\nGenerating dual plots...")
+    print("\nGenerating dual plots (time-aligned)...")
 
     # 1. 位置响应曲线（双行）
     print("1. Plotting dual position response...")

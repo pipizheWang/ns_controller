@@ -4,33 +4,25 @@ import numpy as np
 class TargetTraj:
     """
     双机目标轨迹生成（直线对飞轨迹）：
-    - FLAG=0: UAV0，从 (-2, 0, 5) 飞到 (2, 0, 5)
-    - FLAG=1: UAV1，从 (2, 0, 5.5) 飞到 (-2, 0, 5.5)
-
-    两架飞机沿直线匀速飞行，飞行时间 T 秒后到达终点并悬停。
-    若 t < 0，视为尚未开始跟踪，保持在起始点。
-    若 t >= T，到达终点后悬停。
+    - FLAG=0: UAV0，从 (-4, 0, 5) 飞到 (4, 0, 5)
+    - FLAG=1: UAV1，从 (4, 0, 5.5) 飞到 (-4, 0, 5.5)
     """
 
     def __init__(self, FLAG: int = 0):
         self.FLAG = int(FLAG)
-        self.T = 10.0  # 飞行时间（秒）
+        self.T = 16.0  # 飞行时间（秒）
 
         # 根据 FLAG 选择起点和终点
         if self.FLAG == 0:
-            # UAV0: 从 (-2, 0, 5) 飞到 (2, 0, 5)
-            self.start = np.array([[-2.0], [0.0], [5.0]])
-            self.end = np.array([[2.0], [0.0], [5.0]])
+            self.start = np.array([[0.0], [0.0], [5.0]])
+            self.end = np.array([[4.0], [0.0], [5.0]])
         elif self.FLAG == 1:
-            # UAV1: 从 (2, 0, 5.5) 飞到 (-2, 0, 5.5)
-            self.start = np.array([[2.0], [0.0], [5.5]])
-            self.end = np.array([[-2.0], [0.0], [5.5]])
+            self.start = np.array([[0.0], [0.0], [5.15]])
+            self.end = np.array([[-4.0], [0.0], [5.15]])
         else:
-            # 兜底：未知 FLAG 时按 UAV0 处理
-            self.start = np.array([[-2.0], [0.0], [5.0]])
-            self.end = np.array([[2.0], [0.0], [5.0]])
+            self.start = np.array([[-4.0], [0.0], [5.0]])
+            self.end = np.array([[4.0], [0.0], [5.0]])
 
-        # 计算匀速飞行的速度向量
         self.velocity = (self.end - self.start) / self.T
 
     # 目标位置

@@ -1,5 +1,26 @@
 # NS Controller 操作指南
 
+
+## 终端 0：启动 PX4 仿真
+
+### 启动自研下洗力模块
+conda deactivate
+cd ~/gz_downwash_plugin
+export GZ_SIM_RESOURCE_PATH=~/PX4-Autopilot/Tools/simulation/gz/models:$GZ_SIM_RESOURCE_PATH
+export GZ_SIM_SYSTEM_PLUGIN_PATH=$PWD/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
+gz sim -v 4 -r "$PWD/worlds/two_drones_downwash.sdf"
+
+conda deactivate
+cd ~/PX4-Autopilot
+source build/px4_sitl_default/rootfs/gz_env.sh
+PX4_SYS_AUTOSTART=4001 PX4_GZ_WORLD=x500_downwash_world PX4_SIM_MODEL=gz_x500_nolegcol PX4_GZ_MODEL_NAME=x500_0 ./build/px4_sitl_default/bin/px4 -i 0
+
+conda deactivate
+cd ~/PX4-Autopilot
+source build/px4_sitl_default/rootfs/gz_env.sh
+PX4_SYS_AUTOSTART=4001 PX4_GZ_WORLD=x500_downwash_world PX4_SIM_MODEL=gz_x500_nolegcol PX4_GZ_MODEL_NAME=x500_1 ./build/px4_sitl_default/bin/px4 -i 1
+
+gz sim -r "$PWD/worlds/two_drones_downwash.sdf"
 ## 终端 1：启动 PX4 仿真
 
 ### 环境准备
@@ -96,11 +117,17 @@ ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 
 #### NS 模式
 ```bash
+ros2 param set /traj_controller_NL0 traj_mode true
+ros2 param set /traj_controller_NL1 traj_mode true
+
 ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NS
 ```
 
 #### NL 模式
 ```bash
+ros2 param set /traj_controller_NS0 traj_mode true
+ros2 param set /traj_controller_NS1 traj_mode true
+
 ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NL
 ```
 

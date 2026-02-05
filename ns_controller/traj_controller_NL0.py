@@ -5,8 +5,9 @@ import rclpy
 import numpy as np
 from numpy.linalg import norm
 from rclpy.node import Node
-from mavros_msgs.msg import AttitudeTarget
+from mavros_msgs.msg import AttitudeTarget, RCOut
 from geometry_msgs.msg import PoseStamped, TwistStamped
+from sensor_msgs.msg import Imu, BatteryState
 from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from .traj import TargetTraj
@@ -24,7 +25,7 @@ class TrajController(Node):
         self.get_logger().info("Node running: %s" % name)
 
         # 控制频率
-        self.control_rate = 50.0
+        self.control_rate = 100.0
         # UAV0 使用 FLAG=0（z=1.0），与 UAV1 水平轨迹一致
         self.traj = TargetTraj(FLAG=0)
 
@@ -34,6 +35,9 @@ class TrajController(Node):
         # 初始化状态变量
         self.current_pa = None
         self.current_velo = None
+        self.current_imu = None
+        self.current_rcout = None
+        self.current_battery = None
 
         # 轨迹计时器
         self.traj_t = -1.0
@@ -48,6 +52,12 @@ class TrajController(Node):
             PoseStamped, '/uav0/local_position/pose', self.pa_cb, qos_best_effort)
         self.velo_sub_ = self.create_subscription(
             TwistStamped, '/uav0/local_position/velocity_local', self.velo_cb, qos_best_effort)
+        self.imu_sub_ = self.create_subscription(
+            Imu, '/uav0/imu/data', self.imu_cb, qos_best_effort)
+        self.rcout_sub_ = self.create_subscription(
+            RCOut, '/uav0/rc/out', self.rcout_cb, qos_best_effort)
+        self.battery_sub_ = self.create_subscription(
+            BatteryState, '/uav0/battery', self.battery_cb, qos_best_effort)
 
         self.controller_pub_ = self.create_publisher(
             AttitudeTarget, '/uav0/setpoint_raw/attitude', qos_reliable)
@@ -55,8 +65,8 @@ class TrajController(Node):
         self.controller_timer_ = self.create_timer(1 / self.control_rate, self.controller_cb)
 
         # 初始化参数
-        self.declare_parameter('sliding_gain', [0.3, 0.3, 0.5])  # 滑模跟踪增益
-        self.declare_parameter('tracking_gain', [3.0, 3.0, 5.0])  # 跟踪增益
+        self.declare_parameter('sliding_gain', [1.0, 1.0, 1.0])  # 滑模跟踪增益
+        self.declare_parameter('tracking_gain', [2.3, 2.3, 2.3])  # 跟踪增益
         self.declare_parameter('traj_mode', False)  # 轨迹模式开关
 
         # 系统常量
@@ -81,46 +91,76 @@ class TrajController(Node):
         log_dir = resolve_source_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # 生成带时间戳的文件名（精确到分钟）
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
-        # NL0：文件名追加后缀 _0
-        log_filename = f'{timestamp}_0.csv'
+        # 生成带时间戳的文件名（精确到秒）
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # NL0：文件名格式 uav0_YYYYMMDD_HHMMSS.csv
+        log_filename = f'uav0_{timestamp}.csv'
         self.log_file_path = log_dir / log_filename
 
         # 创建CSV文件并写入表头
         self.log_file = open(self.log_file_path, 'w', newline='')
         self.csv_writer = csv.writer(self.log_file)
 
-        # 写入表头
+        # 写入表头（19列）
         header = [
-            'timestamp',
-            'x', 'y', 'z',
-            'vx', 'vy', 'vz',
-            'roll', 'pitch', 'yaw',
-            'x_des', 'y_des', 'z_des'
+            'tick',
+            'pos_x', 'pos_y', 'pos_z',
+            'vel_x', 'vel_y', 'vel_z',
+            'acc_x', 'acc_y', 'acc_z',
+            'qua_x', 'qua_y', 'qua_z', 'qua_w',
+            'pwm_1', 'pwm_2', 'pwm_3', 'pwm_4',
+            'voltage'
         ]
         self.csv_writer.writerow(header)
         self.log_file.flush()  # 立即写入磁盘
 
         self.get_logger().info(f"Flight log initialized: {self.log_file_path}")
 
-    def log_flight_data(self, pose, velo, rotation_matrix, traj_p):
-        """记录飞行数据到CSV文件"""
-        # 从旋转矩阵提取欧拉角（roll, pitch, yaw）
-        r = R.from_matrix(rotation_matrix)
-        euler_angles = r.as_euler('xyz', degrees=True)  # 返回角度
-        roll, pitch, yaw = euler_angles
+    def log_flight_data(self, pose, velo, quaternion):
+        """记录飞行数据到CSV文件（19列）"""
+        # 获取当前时间戳（微秒）
+        tick = self.get_clock().now().nanoseconds // 1000
 
-        # 获取当前时间戳（秒）
-        current_time = self.get_clock().now().nanoseconds * 1e-9
+        # 位置（保留原始坐标，不做偏移）
+        pos_x, pos_y, pos_z = pose[0, 0]-2.0, pose[1, 0], pose[2, 0]
 
-        # 准备数据行
+        # 速度
+        vel_x, vel_y, vel_z = velo[0, 0], velo[1, 0], velo[2, 0]
+
+        # 加速度（从IMU获取，包含重力分量）如果没有数据则用0
+        if self.current_imu is not None:
+            acc_x = self.current_imu.linear_acceleration.x
+            acc_y = self.current_imu.linear_acceleration.y
+            acc_z = self.current_imu.linear_acceleration.z
+        else:
+            acc_x, acc_y, acc_z = 0.0, 0.0, 0.0
+
+        # 四元数（归一化）
+        qua_x, qua_y, qua_z, qua_w = quaternion
+        norm_q = np.sqrt(qua_x**2 + qua_y**2 + qua_z**2 + qua_w**2)
+        qua_x, qua_y, qua_z, qua_w = qua_x/norm_q, qua_y/norm_q, qua_z/norm_q, qua_w/norm_q
+
+        # PWM值（直接使用原始值）如果没有数据则用0
+        if self.current_rcout is not None and len(self.current_rcout.channels) >= 4:
+            pwm_1 = self.current_rcout.channels[0]
+            pwm_2 = self.current_rcout.channels[1]
+            pwm_3 = self.current_rcout.channels[2]
+            pwm_4 = self.current_rcout.channels[3]
+        else:
+            pwm_1, pwm_2, pwm_3, pwm_4 = 0.0, 0.0, 0.0, 0.0
+
+        # 电压，如果没有数据则用0
+        voltage = self.current_battery.voltage if self.current_battery is not None else 0.0
+
+        # 准备数据行（19列）
         data_row = [
-            current_time,
-            pose[0, 0], pose[1, 0], pose[2, 0],  # x, y, z
-            velo[0, 0], velo[1, 0], velo[2, 0],  # vx, vy, vz
-            roll, pitch, yaw,  # roll, pitch, yaw
-            traj_p[0, 0], traj_p[1, 0], traj_p[2, 0]  # x_des, y_des, z_des
+            tick,
+            pos_x, pos_y, pos_z,
+            vel_x, vel_y, vel_z,
+            acc_x, acc_y, acc_z,
+            qua_x, qua_y, qua_z, qua_w,
+            pwm_1, pwm_2, pwm_3, pwm_4,
+            voltage
         ]
 
         # 写入CSV
@@ -139,6 +179,21 @@ class TrajController(Node):
 
     def velo_cb(self, msg):
         self.current_velo = msg
+
+    def imu_cb(self, msg):
+        if self.current_imu is None:
+            self.get_logger().info("First IMU data received")
+        self.current_imu = msg
+
+    def rcout_cb(self, msg):
+        if self.current_rcout is None:
+            self.get_logger().info("First RCOut data received")
+        self.current_rcout = msg
+
+    def battery_cb(self, msg):
+        if self.current_battery is None:
+            self.get_logger().info("First Battery data received")
+        self.current_battery = msg
 
     def update_trajectory_time(self, traj_mode):
 
@@ -211,7 +266,7 @@ class TrajController(Node):
 
         # 计算归一化推力值（考虑效率）
         # normalized_thrust = np.sqrt(thrust / self.gravity * self.thrust_efficiency * self.thrust_efficiency)
-        normalized_thrust = -0.0015 * thrust * thrust + 0.0764 * thrust + 0.1237
+        normalized_thrust = -0.0015 * thrust * thrust + 0.0764 * thrust + 0.1237 - 0.0012
         attitude_target.thrust = np.clip(normalized_thrust, 0.0, 1.0)
 
         # 基于期望力方向计算期望姿态
@@ -281,8 +336,22 @@ class TrajController(Node):
         # 发布控制指令
         self.controller_pub_.publish(attitude_target)
 
-        # 记录飞行数据到CSV
-        self.log_flight_data(pose, velo, rotation_matrix, traj_p)
+        # 只有在轨迹跟踪模式下才记录飞行数据到CSV
+        if traj_mode and self.traj_t >= 0:
+            quaternion = [
+                self.current_pa.pose.orientation.x,
+                self.current_pa.pose.orientation.y,
+                self.current_pa.pose.orientation.z,
+                self.current_pa.pose.orientation.w
+            ]
+            self.log_flight_data(pose, velo, quaternion)
+            
+            # 定期输出诊断信息（每5秒一次）
+            if int(self.traj_t) % 5 == 0 and int(self.traj_t * 10) % 50 < 2:
+                status = f"Data status - IMU: {'OK' if self.current_imu else 'MISSING'}, "
+                status += f"RCOut: {'OK' if self.current_rcout else 'MISSING'}, "
+                status += f"Battery: {'OK' if self.current_battery else 'MISSING'}"
+                self.get_logger().info(status)
 
         # 在获取当前状态后立即打印
         pose, velo, rotation_matrix, body_z = self.get_current_state()

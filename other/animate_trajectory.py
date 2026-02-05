@@ -20,7 +20,7 @@ import mpl_toolkits.mplot3d.art3d as art3d
 class QuadrotorModel:
     """四旋翼无人机模型"""
     
-    def __init__(self, arm_length=0.3):
+    def __init__(self, arm_length=0.15):
         """
         初始化四旋翼模型
         
@@ -114,7 +114,7 @@ class QuadrotorModel:
 class TrajectoryAnimator:
     """轨迹动画生成器"""
     
-    def __init__(self, log_file_path, arm_length=0.5):
+    def __init__(self, log_file_path, arm_length=0.15):
         """
         初始化轨迹动画器
         
@@ -202,7 +202,7 @@ class TrajectoryAnimator:
         
         self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        self.ax.set_zlim(4.5, 6.0)  # 固定z轴范围为4.5-6米
+        self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-5.5米
         
         # 设置视角
         self.ax.view_init(elev=25, azim=45)
@@ -378,7 +378,7 @@ class TrajectoryAnimator:
 class DualTrajectoryAnimator:
     """双日志轨迹动画：将两架无人机的轨迹绘制在同一个 3D 动画中。"""
 
-    def __init__(self, log0_path, log1_path, arm_length=0.5):
+    def __init__(self, log0_path, log1_path, arm_length=0.15):
         self.log0_path = Path(log0_path)
         self.log1_path = Path(log1_path)
         self.data0 = None
@@ -389,6 +389,11 @@ class DualTrajectoryAnimator:
         self.ax = None
         self.frame_skip0 = 1
         self.frame_skip1 = 1
+
+        # 时间戳对齐参数
+        self.time_offset = None  # log1相对于log0的时间偏差
+        self.aligned_time_range = None  # 对齐后的时间范围 (start, end)
+        self.aligned_duration = None  # 动画总时长
 
         # 绘图元素
         self.trajectory_line0 = None
@@ -422,17 +427,98 @@ class DualTrajectoryAnimator:
         data['time'] = data['timestamp'] - data['timestamp'][0]
         return data, len(rows)
 
+    def _align_timestamps(self):
+        """
+        根据时间戳对齐两个日志文件。
+        处理整数秒偏差和采样率不一致的问题。
+        """
+        ts0 = self.data0['timestamp']
+        ts1 = self.data1['timestamp']
+        
+        # 粗对齐：找到两个日志时间戳的大致对齐点
+        # 取两个日志开始时间中较晚的作为对齐起点
+        start_ts0 = ts0[0]
+        start_ts1 = ts1[0]
+        aligned_start = max(start_ts0, start_ts1)
+        
+        # 取两个日志结束时间中较早的作为对齐终点
+        end_ts0 = ts0[-1]
+        end_ts1 = ts1[-1]
+        aligned_end = min(end_ts0, end_ts1)
+        
+        # 检查是否有重叠
+        if aligned_start >= aligned_end:
+            raise ValueError(
+                f"两个日志没有足够的时间重叠。"
+                f"log0: [{start_ts0:.3f}, {end_ts0:.3f}], "
+                f"log1: [{start_ts1:.3f}, {end_ts1:.3f}]"
+            )
+        
+        # 计算时间偏差（log1相对于log0）
+        # 这里我们用两个日志的起始时间差作为初始偏差估计
+        self.time_offset = start_ts1 - start_ts0
+        
+        # 保存对齐的时间范围（使用相对时间）
+        self.aligned_time_range = (aligned_start - start_ts0, aligned_end - start_ts0)
+        self.aligned_duration = self.aligned_time_range[1] - self.aligned_time_range[0]
+        
+        print(f"\n时间戳对齐信息:")
+        print(f"  log0 起始时间戳: {start_ts0:.6f}")
+        print(f"  log1 起始时间戳: {start_ts1:.6f}")
+        print(f"  时间偏差 (log1 - log0): {self.time_offset:.6f} 秒")
+        print(f"  对齐后的时间范围: [{self.aligned_time_range[0]:.2f}, {self.aligned_time_range[1]:.2f}] 秒")
+        print(f"  对齐后的总时长: {self.aligned_duration:.2f} 秒")
+
+    def _find_nearest_frame(self, target_time, timestamps):
+        """
+        根据目标时间找到最接近的帧索引。
+        使用二分查找加速搜索。
+        
+        Args:
+            target_time: 目标时间（相对时间）
+            timestamps: 时间戳数组（绝对时间戳）
+        
+        Returns:
+            最接近的帧索引
+        """
+        # 将相对时间转换为绝对时间戳
+        target_ts = target_time + timestamps[0]
+        
+        # 使用二分查找找到最接近的时间戳
+        idx = np.searchsorted(timestamps, target_ts)
+        
+        # 检查边界
+        if idx <= 0:
+            return 0
+        if idx >= len(timestamps):
+            return len(timestamps) - 1
+        
+        # 比较两个相邻索引，返回更接近的一个
+        if abs(timestamps[idx] - target_ts) < abs(timestamps[idx-1] - target_ts):
+            return idx
+        else:
+            return idx - 1
+
     def load_data(self):
         self.data0, n0 = self._load_one(self.log0_path)
         self.data1, n1 = self._load_one(self.log1_path)
         print(f"log0: {self.log0_path.name} -> {n0} 条记录, 时长 {self.data0['time'][-1]:.2f}s")
         print(f"log1: {self.log1_path.name} -> {n1} 条记录, 时长 {self.data1['time'][-1]:.2f}s")
 
-        # 自动跳帧，使动画在合理帧数范围
+        # 根据时间戳对齐两个日志
+        self._align_timestamps()
+
+        # 自动跳帧，使动画在合理帧数范围，基于对齐后的时长
         target_frames = 400
-        self.frame_skip0 = max(1, n0 // target_frames)
-        self.frame_skip1 = max(1, n1 // target_frames)
-        print(f"跳帧率: log0={self.frame_skip0}, log1={self.frame_skip1}")
+        # 使用对齐后的时间长度来计算跳帧率
+        estimated_total_frames = min(n0, n1)
+        frame_skip = max(1, estimated_total_frames // target_frames)
+        self.frame_skip0 = frame_skip
+        self.frame_skip1 = frame_skip
+        
+        # 重新计算帧数（基于对齐后的时间范围）
+        n_frames_aligned = int(self.aligned_duration * 50 / frame_skip)  # 假设50Hz采样
+        print(f"自动跳帧率: {frame_skip}, 对齐后动画帧数约: {n_frames_aligned}")
 
     def setup_plot(self):
         self.fig = plt.figure(figsize=(14, 10))
@@ -458,7 +544,7 @@ class DualTrajectoryAnimator:
         mid_z = (all_z.max() + all_z.min()) * 0.5
         self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        self.ax.set_zlim(4.5, 6.0)  # 固定z轴范围为4.5-6米
+        self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-6米
 
         self.ax.view_init(elev=25, azim=45)
 
@@ -515,13 +601,27 @@ class DualTrajectoryAnimator:
                self.rotor_circles0 + self.rotor_circles1 + [self.info_text]
 
     def _update_one(self, idx, data, quad, arm_lines, rotor_circles, traj_line):
+        """
+        更新单个无人机的动画元素。
+        
+        Args:
+            idx: 数据索引
+            data: 该无人机的数据字典
+            quad: 该无人机的四旋翼模型
+            arm_lines: 机臂线段列表
+            rotor_circles: 旋翼圆圈列表
+            traj_line: 轨迹线对象
+        
+        Returns:
+            (位置向量, 姿态角度数组, 跟踪误差)
+        """
         # 位置与姿态
         x, y, z = data['x'][idx], data['y'][idx], data['z'][idx]
         roll = np.deg2rad(data['roll'][idx])
         pitch = np.deg2rad(data['pitch'][idx])
         yaw = np.deg2rad(data['yaw'][idx])
 
-        # 轨迹
+        # 轨迹（仅绘制到当前索引为止）
         traj_line.set_data(data['x'][:idx+1], data['y'][:idx+1])
         traj_line.set_3d_properties(data['z'][:idx+1])
 
@@ -551,19 +651,41 @@ class DualTrajectoryAnimator:
         return position, np.rad2deg([roll, pitch, yaw]), err
 
     def update_frame(self, frame):
-        idx0 = min(frame * self.frame_skip0, len(self.data0['x']) - 1)
-        idx1 = min(frame * self.frame_skip1, len(self.data1['x']) - 1)
-
+        """
+        根据时间戳同步更新两个日志的动画帧。
+        使用共同的"参考时间"找到每个日志中最接近的数据点。
+        """
+        # 根据帧数计算参考时间（相对于对齐时间范围的开始）
+        ref_time = self.aligned_time_range[0] + frame * 0.02 * self.frame_skip0  # 50Hz采样
+        
+        # 限制在对齐时间范围内
+        ref_time = np.clip(ref_time, self.aligned_time_range[0], self.aligned_time_range[1])
+        
+        # 在两个日志中找到最接近的帧
+        # 对于log0，直接使用相对时间
+        idx0 = self._find_nearest_frame(ref_time, self.data0['timestamp'])
+        
+        # 对于log1，需要考虑时间偏差
+        # log1的参考时间需要转换为log1的参考系统
+        ref_time_log1 = ref_time + self.time_offset
+        idx1 = self._find_nearest_frame(ref_time_log1, self.data1['timestamp'])
+        
+        # 更新两个无人机
         pos0, att0_deg, err0 = self._update_one(idx0, self.data0, self.quad0, self.arm_lines0, self.rotor_circles0, self.trajectory_line0)
         pos1, att1_deg, err1 = self._update_one(idx1, self.data1, self.quad1, self.arm_lines1, self.rotor_circles1, self.trajectory_line1)
 
+        # 获取实际的相对时间（用于显示）
         t0 = self.data0['time'][idx0]
         t1 = self.data1['time'][idx1]
-        t_str = f"t0={t0:.2f}s, t1={t1:.2f}s"
+        
+        # 构建信息文本
+        t_str = f"Aligned Time: {ref_time - self.aligned_time_range[0]:.2f}s / {self.aligned_duration:.2f}s"
         info = (
             f"{t_str}\n"
-            f"log0 Pos=({pos0[0]:.2f},{pos0[1]:.2f},{pos0[2]:.2f}) Att=({att0_deg[0]:.1f}°, {att0_deg[1]:.1f}°, {att0_deg[2]:.1f}°) Err={err0:.3f}m\n"
-            f"log1 Pos=({pos1[0]:.2f},{pos1[1]:.2f},{pos1[2]:.2f}) Att=({att1_deg[0]:.1f}°, {att1_deg[1]:.1f}°, {att1_deg[2]:.1f}°) Err={err1:.3f}m"
+            f"log0 (t={t0:.2f}s) Pos=({pos0[0]:.2f},{pos0[1]:.2f},{pos0[2]:.2f}) "
+            f"Att=({att0_deg[0]:.1f}°, {att0_deg[1]:.1f}°, {att0_deg[2]:.1f}°) Err={err0:.3f}m\n"
+            f"log1 (t={t1:.2f}s) Pos=({pos1[0]:.2f},{pos1[1]:.2f},{pos1[2]:.2f}) "
+            f"Att=({att1_deg[0]:.1f}°, {att1_deg[1]:.1f}°, {att1_deg[2]:.1f}°) Err={err1:.3f}m"
         )
         self.info_text.set_text(info)
 
@@ -579,12 +701,15 @@ class DualTrajectoryAnimator:
             self.load_data()
 
         self.setup_plot()
-        n_frames = min(len(self.data0['x']) // self.frame_skip0,
-                       len(self.data1['x']) // self.frame_skip1)
+        
+        # 基于对齐后的时长计算帧数（50Hz采样）
+        n_frames = int(self.aligned_duration * 50 / self.frame_skip0)
 
-        print(f"\n开始生成双日志动画...")
-        print(f"总帧数: {n_frames}")
+        print(f"\n开始生成双日志动画（时间戳同步）...")
+        print(f"对齐时间范围: {self.aligned_time_range[0]:.2f}s - {self.aligned_time_range[1]:.2f}s")
+        print(f"对齐总时长: {self.aligned_duration:.2f}s")
         print(f"帧间隔: {interval} ms")
+        print(f"总帧数: {n_frames}")
 
         anim = FuncAnimation(
             self.fig,
@@ -616,6 +741,59 @@ class DualTrajectoryAnimator:
         return anim
 
 
+class DualTrajectoryAnimatorXZ(DualTrajectoryAnimator):
+    """双日志轨迹动画：XZ平面视图（2D）"""
+
+    def setup_plot(self):
+        """设置XZ平面视角的绘图环境"""
+        self.fig = plt.figure(figsize=(14, 10))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+
+        self.fig.suptitle('Dual Quadrotor Trajectory Animation - XZ View (log0 + log1)', fontsize=16, fontweight='bold')
+        self.ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
+        self.ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
+        self.ax.set_zlabel('Z (m)', fontsize=12, labelpad=10)
+
+        # 结合两份日志的数据计算范围
+        all_x = np.concatenate([self.data0['x'], self.data0['x_des'], self.data1['x'], self.data1['x_des']])
+        all_y = np.concatenate([self.data0['y'], self.data0['y_des'], self.data1['y'], self.data1['y_des']])
+        all_z = np.concatenate([self.data0['z'], self.data0['z_des'], self.data1['z'], self.data1['z_des']])
+        max_range = np.array([
+            all_x.max() - all_x.min(),
+            all_y.max() - all_y.min(),
+            all_z.max() - all_z.min(),
+        ]).max() / 2.0
+        max_range *= 1.2
+        mid_x = (all_x.max() + all_x.min()) * 0.5
+        mid_y = (all_y.max() + all_y.min()) * 0.5
+        mid_z = (all_z.max() + all_z.min()) * 0.5
+        self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-5.5米
+
+        # XZ平面视角：仰角0度（平视），方位角-90度（正对XZ平面）
+        self.ax.view_init(elev=0, azim=-90)
+
+        # 期望轨迹（半透明虚线）：蓝色对应 log0，橙色对应 log1
+        self.ax.plot(self.data0['x_des'], self.data0['y_des'], self.data0['z_des'],
+                     color='#1f77b4', linestyle='--', linewidth=2, alpha=0.35, label='Desired 0')
+        self.ax.plot(self.data1['x_des'], self.data1['y_des'], self.data1['z_des'],
+                     color='#ff7f0e', linestyle='--', linewidth=2, alpha=0.35, label='Desired 1')
+
+        # 起点/终点标记
+        self.ax.scatter(self.data0['x'][0], self.data0['y'][0], self.data0['z'][0],
+                        c='green', s=160, marker='o', label='Start 0', zorder=10)
+        self.ax.scatter(self.data0['x'][-1], self.data0['y'][-1], self.data0['z'][-1],
+                        c='red', s=160, marker='s', label='End 0', zorder=10)
+        self.ax.scatter(self.data1['x'][0], self.data1['y'][0], self.data1['z'][0],
+                        c='lime', s=140, marker='o', label='Start 1', zorder=10)
+        self.ax.scatter(self.data1['x'][-1], self.data1['y'][-1], self.data1['z'][-1],
+                        c='darkred', s=140, marker='s', label='End 1', zorder=10)
+
+        self.ax.legend(loc='upper right', fontsize=10)
+        self.ax.grid(True, alpha=0.3)
+
+
 def main():
     """主函数"""
     import argparse
@@ -632,6 +810,8 @@ def main():
                        help='Quadrotor arm length in meters (default: 0.5)')
     parser.add_argument('--list', action='store_true',
                        help='List all log files in log directory')
+    parser.add_argument('--view', type=str, default='3d', choices=['3d', 'xz'],
+                       help='View mode: 3d (default) or xz (XZ plane 2D view)')
     
     args = parser.parse_args()
     
@@ -711,8 +891,14 @@ def main():
         print(f"未指定保存路径，将保存到: {save_path}")
     
     try:
-        # 创建双日志动画器
-        animator = DualTrajectoryAnimator(log0, log1, arm_length=args.arm_length)
+        # 根据视图模式选择动画器类
+        if args.view == 'xz':
+            animator = DualTrajectoryAnimatorXZ(log0, log1, arm_length=args.arm_length)
+            print("使用XZ平面视图模式")
+        else:
+            animator = DualTrajectoryAnimator(log0, log1, arm_length=args.arm_length)
+            print("使用3D视图模式")
+        
         animator.load_data()
 
         # 生成动画

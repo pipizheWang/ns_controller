@@ -62,8 +62,8 @@ class TrajController(Node):
         self.controller_timer_ = self.create_timer(1 / self.control_rate, self.controller_cb)
 
         # 初始化参数
-        self.declare_parameter('sliding_gain', [0.3, 0.3, 0.5])  # 滑模跟踪增益
-        self.declare_parameter('tracking_gain', [3.0, 3.0, 5.0])  # 跟踪增益
+        self.declare_parameter('sliding_gain', [1.0, 1.0, 1.0])  # 滑模跟踪增益
+        self.declare_parameter('tracking_gain', [2.3, 2.3, 2.3])  # 跟踪增益
         self.declare_parameter('traj_mode', False)  # 轨迹模式开关
         self.declare_parameter('mass', 2.0)  # 质量 kg
 
@@ -114,10 +114,10 @@ class TrajController(Node):
         current_time = self.get_clock().now().nanoseconds * 1e-9
         data_row = [
             current_time,
-            pose[0, 0], pose[1, 0], pose[2, 0],
+            pose[0, 0]-4.0, pose[1, 0], pose[2, 0],
             velo[0, 0], velo[1, 0], velo[2, 0],
             roll, pitch, yaw,
-            traj_p[0, 0], traj_p[1, 0], traj_p[2, 0],
+            traj_p[0, 0]-4.0, traj_p[1, 0], traj_p[2, 0],
             self.aero_force_z,
             aero_comp_z
         ]
@@ -191,7 +191,7 @@ class TrajController(Node):
     def calculate_attitude_from_force(self, F_sp, body_z, yaw_sp):
         thrust = float(np.dot(F_sp.T, body_z))
         attitude_target = AttitudeTarget()
-        normalized_thrust = -0.0015 * thrust * thrust + 0.0764 * thrust + 0.1237
+        normalized_thrust = -0.0015 * thrust * thrust + 0.0764 * thrust + 0.1237 - 0.0012
         attitude_target.thrust = np.clip(normalized_thrust, 0.0, 1.0)
 
         body_z_sp = F_sp / norm(F_sp)
@@ -232,8 +232,9 @@ class TrajController(Node):
         attitude_target = self.calculate_attitude_from_force(F_sp, body_z, traj_yaw)
         self.controller_pub_.publish(attitude_target)
 
-        # 记录日志
-        self.log_flight_data(pose, velo, rotation_matrix, traj_p, aero_comp_z)
+        # 只有在轨迹跟踪模式下才记录日志
+        if traj_mode and self.traj_t >= 0:
+            self.log_flight_data(pose, velo, rotation_matrix, traj_p, aero_comp_z)
 
         if self.get_logger().get_effective_level() <= rclpy.logging.LoggingSeverity.DEBUG:
             position_error = norm(pose - traj_p)
