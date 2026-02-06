@@ -27,7 +27,7 @@ class rho_Net(nn.Module):
         self.fc2 = nn.Linear(40, 40)
         self.fc3 = nn.Linear(40, 40)
         #self.fc4 = nn.Linear(40, 40)
-        self.fc4 = nn.Linear(40, 1)
+        self.fc4 = nn.Linear(40, 1)  # 输出1个值: Faz
         
     def forward(self, x):
         x = F.relu(self.fc1(x))

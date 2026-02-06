@@ -1,151 +1,8 @@
 import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
-from scipy import signal
+from utils import interpolation_cubic, Fa, get_data
 
-# Convert quaternion to rotation matrix
-def rotation_matrix(quat):
-    rot_mat = np.ones([3,3])
-    a = quat[0]**2
-    b = quat[1]**2
-    c = quat[2]**2
-    d = quat[3]**2
-    e = quat[0]*quat[1]
-    f = quat[0]*quat[2]
-    g = quat[0]*quat[3]
-    h = quat[1]*quat[2]
-    i = quat[1]*quat[3]
-    j = quat[2]*quat[3]
-    rot_mat[0,0] = a - b - c + d
-    rot_mat[0,1] = 2 * (e - j)
-    rot_mat[0,2] = 2 * (f + i)
-    rot_mat[1,0] = 2 * (e + j)
-    rot_mat[1,1] = -a + b - c + d
-    rot_mat[1,2] = 2 * (h - g)
-    rot_mat[2,0] = 2 * (f - i)
-    rot_mat[2,1] = 2 * (h + g)
-    rot_mat[2,2] = -a - b + c + d
-    return rot_mat
-
-# Convert quaternion to Euler angle
-def qua2euler(qua):
-    euler = np.zeros(3)
-    q0 = qua[3]
-    q1 = qua[0]
-    q2 = qua[1]
-    q3 = qua[2]
-    euler[0] = np.degrees(np.arctan2(2*(q0*q1+q2*q3), 1-2*(q1**2+q2**2)))
-    euler[1] = np.degrees(np.arcsin(2*(q0*q2-q3*q1)))
-    euler[2] = np.degrees(np.arctan2(2*(q0*q3+q1*q2), 1-2*(q2**2+q3**2)))
-    return euler
-
-# cubic (or linear) interpolation
-def cubic(x, y, xnew, kind='linear'):
-    f = interp1d(x, y, kind=kind)
-    return f(xnew)
-
-# data interpolation
-def interpolation_cubic(t0, t1, Data, ss, ee):
-    time = np.linspace(t0, t1, int(100*(t1-t0)+1))
-    pos = np.zeros((time.shape[0], 3))
-    qua = np.zeros((time.shape[0], 4))
-    pwm = np.zeros((time.shape[0], 4))
-    vel = np.zeros((time.shape[0], 3))
-    vel_num = np.zeros((time.shape[0], 3))
-    acc_num = np.zeros((time.shape[0], 3))
-    vol = np.zeros((time.shape[0]))
-    acc_imu = np.zeros((time.shape[0], 3))
-    tau_u = np.zeros((time.shape[0], 3))
-    omega = np.zeros((time.shape[0], 3))
-    omega_dot = np.zeros((time.shape[0], 3))
-    euler = np.zeros((time.shape[0], 3))
-    acc_filter = np.zeros((time.shape[0], 3))
-    acc_smooth = np.zeros((time.shape[0], 3))
-    
-    x = Data['time'][ss:ee]
-    for i in range(3):
-        pos[:, i] = cubic(x, Data['pos'][ss:ee, i], time)
-        vel[:, i] = cubic(x, Data['vel'][ss:ee, i], time)
-        acc_imu[:, i] = cubic(x, Data['acc'][ss:ee, i], time)
-        tau_u[:, i] = cubic(x, Data['tau_u'][ss:ee, i], time)
-        omega[:, i] = cubic(x, Data['omega'][ss:ee, i], time)
- 
-    for i in range(3):
-        acc_num[2:-2,i] = (-vel[4:,i] + 8 * vel[3:-1,i] - 8 * vel[1:-3,i] + vel[:-4,i]) / 12 * 100
-        vel_num[2:-2,i] = (-pos[4:,i] + 8 * pos[3:-1,i] - 8 * pos[1:-3,i] + pos[:-4,i]) / 12 * 100        
-        omega_dot[2:-2,i] = (-omega[4:,i] + 8 * omega[3:-1,i] - 8 * omega[1:-3,i] + omega[:-4,i]) / 12 * 100
-    
-    for i in range(4):
-        qua[:, i] = cubic(x, Data['qua'][ss:ee, i], time)
-        pwm[:, i] = cubic(x, Data['pwm'][ss:ee, i], time)
-    vol[:] = cubic(x, Data['vol'][ss:ee], time)
-    
-    for j in range(time.shape[0]):
-        euler[j, :] = qua2euler(qua[j, :])
-    
-    # Filter on acc
-    b, a = signal.butter(1, 0.1)
-    for i in range(3):
-        acc_filter[:, i] = signal.filtfilt(b, a, acc_num[:, i])
-    
-    # Moving average smoothing
-    n = 5
-    l = int((n-1) / 2)
-    for i in range(3):
-        for j in range(n):
-            if j == n-1:
-                temp = acc_num[j:, i]
-            else:
-                temp = acc_num[j:-(n-1-j), i]
-            acc_smooth[l:-l, i] = acc_smooth[l:-l, i] + temp
-        acc_smooth[l:-l, i] = acc_smooth[l:-l, i] / n
-        
-    Data_int = {'time': time, 'pos': pos, 'vel': vel, 'acc_imu': acc_imu, 'vel_num': vel_num, \
-                'qua': qua, 'pwm': pwm, 'vol': vol, 'acc_num': acc_num, 'euler': euler, \
-               'tau_u': tau_u, 'omega': omega, 'omega_dot': omega_dot, 'acc_filter': acc_filter, 'acc_smooth': acc_smooth}
-    return Data_int
-
-# Compute Fa
-def Fa(Data, m, g, p_00, p_10, p_01, p_20, p_11):
-    R = np.zeros([Data['time'].shape[0], 3, 3])
-    for i in range(Data['time'].shape[0]):
-        R[i, :, :] = rotation_matrix(Data['qua'][i, :])
-        
-    force_pwm_1 = p_00 + p_10 * Data['pwm'][:, 0] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 0]**2 + p_11 * Data['vol'] * Data['pwm'][:, 0]
-    force_pwm_2 = p_00 + p_10 * Data['pwm'][:, 1] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 1]**2 + p_11 * Data['vol'] * Data['pwm'][:, 1]
-    force_pwm_3 = p_00 + p_10 * Data['pwm'][:, 2] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 2]**2 + p_11 * Data['vol'] * Data['pwm'][:, 2]
-    force_pwm_4 = p_00 + p_10 * Data['pwm'][:, 3] + p_01 * Data['vol'] + p_20 * Data['pwm'][:, 3]**2 + p_11 * Data['vol'] * Data['pwm'][:, 3]
-    thrust_pwm = force_pwm_1 + force_pwm_2 + force_pwm_3 + force_pwm_4 # N
-
-    Fa = np.zeros([Data['time'].shape[0], 3])
-    for i in range(Data['time'].shape[0]):
-        Fa[i, :] = m * Data['acc_imu'][i, :] - thrust_pwm[i]  * R[i, :, 2] - np.array([0, 0, -m*g]) # Newton
-    
-    Data['fa_imu'] = Fa
-    
-    return Data
-
-def get_data(D1, D2, typ='fa_imu'):
-
-    g = 9.81
-    L = D1['time'].shape[0]
-    
-    # 13维输入: [相对位置(3), 相对速度(3), 保留(6), 场景编码(1)]
-    data_input = np.zeros([L, 13], dtype=np.float32)
-    data_output = np.zeros([L, 3], dtype=np.float32)
-    
-    # 计算相对位置和速度
-    data_input[:, :3] = D2['pos'] - D1['pos']
-    data_input[:, 3:6] = D2['vel'] - D1['vel']
-    # data_input[:, 6:12] 保持为0（预留给三机场景）
-    data_input[:, -1] = 2  # L2L场景编码
-    
-    # 输出: D1受到的气动力 (Newton -> gram)
-    data_output[:, :] = D1[typ] / g * 1000
-    
-    return data_input, data_output
-
-# ===== 原有函数 =====
+# ===== 数据处理函数 =====
 
 # 1. 读取你的CSV文件
 def load_your_csv(filename):
@@ -189,17 +46,16 @@ def preprocess_two_uav_data(uav1_csv, uav2_csv, save_path='./'):
     
     # 计算气动力（需要你的无人机质量和推力模型参数）
     g = 9.81
-    m = 2000  # 克
+    m = 2.0  # 千克
     
-    # 原始拟合参数（单位：N）
-    p_00 = 354.716813
-    p_10 = -0.483469
-    p_01 = -19.170488
-    p_20 = 8.183327e-05
-    p_11 = 0.022760
+    # 推力拟合参数（单位：N）
+    # 模型: force = p_0 + p_1*pwm + p_2*pwm^2
+    p_0 = -184.900182
+    p_1 = 0.472594
+    p_2 = -2.935641e-04
     
-    Data1 = Fa(Data1_int, m, g, p_00, p_10, p_01, p_20, p_11)
-    Data2 = Fa(Data2_int, m, g, p_00, p_10, p_01, p_20, p_11)
+    Data1 = Fa(Data1_int, m, g, p_0, p_1, p_2)
+    Data2 = Fa(Data2_int, m, g, p_0, p_1, p_2)
     
     # 生成L2L训练数据对（下方飞机受上方飞机干扰）
     data_input, data_output = get_data(D1=Data1, D2=Data2, typ='fa_imu')
@@ -218,11 +74,11 @@ def preprocess_two_uav_data(uav1_csv, uav2_csv, save_path='./'):
 # 3. 使用示例
 if __name__ == '__main__':
     # 注意：uav1_csv是下方飞机（受扰动的飞机），uav2_csv是上方飞机（产生扰动的飞机）
-    uav_lower_file = '/home/zhe/px4_ws/src/ns_controller/log/uav0_20260205_000450.csv'  # UAV0在下面
-    uav_upper_file = '/home/zhe/px4_ws/src/ns_controller/log/uav1_20260205_000446.csv'  # UAV1在上面
+    uav_lower_file = 'data/uav0_20260205_000450.csv'  # UAV0在下面
+    uav_upper_file = 'data/uav1_20260205_000446.csv'  # UAV1在上面
     
     data_input, data_output = preprocess_two_uav_data(
         uav1_csv=uav_lower_file,   # D1: 下方飞机，输出其受到的气动力
         uav2_csv=uav_upper_file,   # D2: 上方飞机，计算相对位置
-        save_path='/home/zhe/px4_ws/src/ns_controller/train/log/'
+        save_path='data'
     )

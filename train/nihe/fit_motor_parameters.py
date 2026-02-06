@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 拟合电机推力模型参数
-模型: force = p_00 + p_10*pwm + p_01*vol + p_20*pwm^2 + p_11*vol*pwm
+模型: force = p_0 + p_1*pwm + p_2*pwm^2
 """
 
 import numpy as np
@@ -9,6 +9,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
 from pathlib import Path
+import platform
+
+# 配置Mac中文字体
+if platform.system() == 'Darwin':  # macOS
+    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS']  # Mac系统中文字体
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 # 配置参数
 MASS = 2.0  # kg
@@ -27,6 +33,10 @@ def prepare_data(df):
     将所有4个电机的数据合并到一起
     根据轨迹时间计算每个时刻的推力: F = m*(g + 0.1*t)
     """
+    # 只保留前405帧数据
+    df = df.iloc[:405].copy()
+    print(f"使用前405帧数据进行拟合（已过滤后续错误数据）")
+    
     pwm_data = []
     vol_data = []
     force_data = []
@@ -61,27 +71,25 @@ def prepare_data(df):
     
     return pwm_all, vol_all, force_all
 
-def create_design_matrix(pwm, vol):
+def create_design_matrix(pwm):
     """
     创建设计矩阵 X
-    force = p_00 + p_10*pwm + p_01*vol + p_20*pwm^2 + p_11*vol*pwm
-    X = [1, pwm, vol, pwm^2, vol*pwm]
+    force = p_0 + p_1*pwm + p_2*pwm^2
+    X = [1, pwm, pwm^2]
     """
     n = len(pwm)
-    X = np.zeros((n, 5))
-    X[:, 0] = 1.0          # p_00
-    X[:, 1] = pwm          # p_10
-    X[:, 2] = vol          # p_01
-    X[:, 3] = pwm ** 2     # p_20
-    X[:, 4] = vol * pwm    # p_11
+    X = np.zeros((n, 3))
+    X[:, 0] = 1.0          # p_0 (常数项)
+    X[:, 1] = pwm          # p_1 (pwm)
+    X[:, 2] = pwm ** 2     # p_2 (pwm^2)
     
     return X
 
-def fit_parameters(pwm, vol, force):
+def fit_parameters(pwm, force):
     """
     使用最小二乘法拟合参数
     """
-    X = create_design_matrix(pwm, vol)
+    X = create_design_matrix(pwm)
     
     # 最小二乘法: X @ params = force
     params, residuals, rank, s = np.linalg.lstsq(X, force, rcond=None)
@@ -93,7 +101,7 @@ def fit_parameters(pwm, vol, force):
     
     return params, rmse, force_pred
 
-def plot_results(pwm, vol, force_true, force_pred):
+def plot_results(pwm, force_true, force_pred):
     """绘制拟合结果"""
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     
@@ -120,11 +128,12 @@ def plot_results(pwm, vol, force_true, force_pred):
     
     # 3. PWM vs 推力
     ax = axes[1, 0]
-    scatter = ax.scatter(pwm, force_pred, c=vol, alpha=0.5, s=1, cmap='viridis')
+    ax.scatter(pwm, force_true, alpha=0.3, s=1, label='真实值', color='blue')
+    ax.scatter(pwm, force_pred, alpha=0.3, s=1, label='拟合值', color='red')
     ax.set_xlabel('PWM')
-    ax.set_ylabel('预测推力 (N)')
-    ax.set_title('PWM vs 推力 (颜色表示电压)')
-    plt.colorbar(scatter, ax=ax, label='电压 (V)')
+    ax.set_ylabel('推力 (N)')
+    ax.set_title('PWM vs 推力')
+    ax.legend()
     ax.grid(True)
     
     # 4. 残差 vs PWM
@@ -159,17 +168,15 @@ def main():
     
     # 拟合参数
     print("\n拟合参数...")
-    params, rmse, force_pred = fit_parameters(pwm, vol, force)
+    params, rmse, force_pred = fit_parameters(pwm, force)
     
     # 输出结果
     print("\n" + "="*60)
     print("拟合结果:")
     print("="*60)
-    print(f"p_00 (常数项)        : {params[0]:12.6f}")
-    print(f"p_10 (pwm系数)       : {params[1]:12.6f}")
-    print(f"p_01 (vol系数)       : {params[2]:12.6f}")
-    print(f"p_20 (pwm^2系数)     : {params[3]:12.6e}")
-    print(f"p_11 (vol*pwm系数)   : {params[4]:12.6f}")
+    print(f"p_0 (常数项)         : {params[0]:12.6f}")
+    print(f"p_1 (pwm系数)        : {params[1]:12.6f}")
+    print(f"p_2 (pwm^2系数)      : {params[2]:12.6e}")
     print("="*60)
     print(f"RMSE: {rmse:.6f} N")
     avg_force = force.mean()
@@ -182,13 +189,11 @@ def main():
     with open(output_file, 'w') as f:
         f.write("电机推力模型参数\n")
         f.write("="*60 + "\n")
-        f.write("模型: force = p_00 + p_10*pwm + p_01*vol + p_20*pwm^2 + p_11*vol*pwm\n")
+        f.write("模型: force = p_0 + p_1*pwm + p_2*pwm^2\n")
         f.write("="*60 + "\n")
-        f.write(f"p_00 = {params[0]:.6f}\n")
-        f.write(f"p_10 = {params[1]:.6f}\n")
-        f.write(f"p_01 = {params[2]:.6f}\n")
-        f.write(f"p_20 = {params[3]:.6e}\n")
-        f.write(f"p_11 = {params[4]:.6f}\n")
+        f.write(f"p_0 = {params[0]:.6f}\n")
+        f.write(f"p_1 = {params[1]:.6f}\n")
+        f.write(f"p_2 = {params[2]:.6e}\n")
         f.write("="*60 + "\n")
         f.write(f"RMSE: {rmse:.6f} N\n")
         f.write(f"平均推力: {avg_force:.4f} N\n")
@@ -197,7 +202,7 @@ def main():
     
     # 绘制结果
     print("\n绘制拟合结果...")
-    fig = plot_results(pwm, vol, force, force_pred)
+    fig = plot_results(pwm, force, force_pred)
     plot_file = Path(__file__).parent / 'motor_fit_results.png'
     fig.savefig(plot_file, dpi=150, bbox_inches='tight')
     print(f"图表已保存到: {plot_file}")
@@ -211,10 +216,9 @@ def main():
     print("="*60)
     for i in range(min(5, len(df))):
         pwm_test = df['PWM_0'].iloc[i]
-        vol_test = df['Battery_Voltage'].iloc[i]
-        X_test = create_design_matrix(np.array([pwm_test]), np.array([vol_test]))
+        X_test = create_design_matrix(np.array([pwm_test]))
         force_test = (X_test @ params)[0]
-        print(f"PWM={pwm_test:.0f}, Vol={vol_test:.2f}V -> Force={force_test:.4f}N")
+        print(f"PWM={pwm_test:.0f} -> Force={force_test:.4f}N")
 
 if __name__ == '__main__':
     main()

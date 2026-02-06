@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Plot npy data visualization
-Input shape: (1717, 13)
-Output shape: (1717, 3)
+Automatically adapts to any input/output dimensions
 """
 
 import numpy as np
@@ -14,11 +13,11 @@ import argparse
 
 def plot_npy_data(input_file, output_file, save_dir):
     """
-    Plot input and output npy data
+    Plot input and output npy data (automatically adapts to any dimensions)
     
     Args:
-        input_file: Input npy file path (1717, 13)
-        output_file: Output npy file path (1717, 3)
+        input_file: Input npy file path (N, D_in)
+        output_file: Output npy file path (N, D_out)
         save_dir: Image save directory
     """
     # Load data
@@ -32,15 +31,24 @@ def plot_npy_data(input_file, output_file, save_dir):
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
     
-    # Get sample count
+    # Get sample count and dimensions
     n_samples = input_data.shape[0]
+    n_input_dims = input_data.shape[1]
+    n_output_dims = output_data.shape[1]
     time_steps = np.arange(n_samples)
     
-    # ========== Plot 13-dimensional input data ==========
-    fig1, axes1 = plt.subplots(4, 4, figsize=(20, 16))
-    axes1 = axes1.flatten()
+    # ========== Plot input data ==========
+    # Calculate subplot layout dynamically
+    n_cols = min(4, n_input_dims)
+    n_rows = (n_input_dims + n_cols - 1) // n_cols  # Ceiling division
     
-    for i in range(13):
+    fig1, axes1 = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+    if n_input_dims == 1:
+        axes1 = np.array([axes1])
+    else:
+        axes1 = axes1.flatten()
+    
+    for i in range(n_input_dims):
         axes1[i].plot(time_steps, input_data[:, i], linewidth=1.5)
         axes1[i].set_title(f'Input Dim {i+1}', fontsize=12, fontweight='bold')
         axes1[i].set_xlabel('Time Steps')
@@ -56,23 +64,26 @@ def plot_npy_data(input_file, output_file, save_dir):
                      fontsize=8)
     
     # Remove extra subplots
-    for i in range(13, 16):
+    total_subplots = n_rows * n_cols
+    for i in range(n_input_dims, total_subplots):
         fig1.delaxes(axes1[i])
     
     plt.tight_layout()
-    plt.savefig(save_path / 'input_data_13dims.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {save_path / 'input_data_13dims.png'}")
+    plt.savefig(save_path / f'input_data_{n_input_dims}dims.png', dpi=300, bbox_inches='tight')
+    print(f"Saved: {save_path / f'input_data_{n_input_dims}dims.png'}")
     plt.close()
     
-    # ========== Plot 3-dimensional output data ==========
-    fig2, axes2 = plt.subplots(3, 1, figsize=(15, 10))
+    # ========== Plot output data ==========
+    fig2, axes2 = plt.subplots(n_output_dims, 1, figsize=(15, 4*n_output_dims))
+    if n_output_dims == 1:
+        axes2 = np.array([axes2])
     
-    output_labels = ['Output Dim 1', 'Output Dim 2', 'Output Dim 3']
-    colors = ['b', 'g', 'r']
+    colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'orange', 'purple', 'brown']
     
-    for i in range(3):
-        axes2[i].plot(time_steps, output_data[:, i], color=colors[i], linewidth=1.5)
-        axes2[i].set_title(output_labels[i], fontsize=14, fontweight='bold')
+    for i in range(n_output_dims):
+        color = colors[i % len(colors)]
+        axes2[i].plot(time_steps, output_data[:, i], color=color, linewidth=1.5)
+        axes2[i].set_title(f'Output Dim {i+1}', fontsize=14, fontweight='bold')
         axes2[i].set_xlabel('Time Steps', fontsize=12)
         axes2[i].set_ylabel('Value', fontsize=12)
         axes2[i].grid(True, alpha=0.3)
@@ -89,8 +100,8 @@ def plot_npy_data(input_file, output_file, save_dir):
                      fontsize=10)
     
     plt.tight_layout()
-    plt.savefig(save_path / 'output_data_3dims.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {save_path / 'output_data_3dims.png'}")
+    plt.savefig(save_path / f'output_data_{n_output_dims}dims.png', dpi=300, bbox_inches='tight')
+    print(f"Saved: {save_path / f'output_data_{n_output_dims}dims.png'}")
     plt.close()
     
     print("\nAll plots generated successfully!")
@@ -98,11 +109,19 @@ def plot_npy_data(input_file, output_file, save_dir):
 
 
 def main():
+    # Get script directory and calculate paths
+    script_dir = Path(__file__).parent.resolve()  # train/data/plots/
+    data_dir = script_dir.parent  # train/data/
+    
     parser = argparse.ArgumentParser(description='Plot npy data visualization')
-    parser.add_argument('--input', type=str, required=True, help='Input npy file path (shape: N, 13)')
-    parser.add_argument('--output', type=str, required=True, help='Output npy file path (shape: N, 3)')
+    parser.add_argument('--input', type=str, 
+                       default=str(data_dir / 'data_input_L2L.npy'),
+                       help='Input npy file path (shape: N, D_in)')
+    parser.add_argument('--output', type=str, 
+                       default=str(data_dir / 'data_output_L2L.npy'),
+                       help='Output npy file path (shape: N, D_out)')
     parser.add_argument('--save_dir', type=str, 
-                       default='/home/zhe/px4_ws/src/ns_controller/train/log/',
+                       default=str(script_dir),  # Save in data/plots/
                        help='Image save directory')
     
     args = parser.parse_args()
@@ -112,13 +131,7 @@ def main():
 
 if __name__ == '__main__':
     # Example usage:
-    # python train/plot_npy_data.py --input input_data.npy --output output_data.npy
-    
-    main()
-
-
-if __name__ == '__main__':
-    # 示例用法
-    # python plot_npy_data.py --input /home/zhe/px4_ws/src/ns_controller/train/log/data_input_L2L.npy --output /home/zhe/px4_ws/src/ns_controller/train/log/data_output_L2L.npy
+    # python plot_npy_data.py --input data_input_L2L.npy --output data_output_L2L.npy
+    # Or just run directly: python plot_npy_data.py
     
     main()
