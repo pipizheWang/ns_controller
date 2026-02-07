@@ -57,12 +57,12 @@ def preprocess_two_uav_data(uav1_csv, uav2_csv, save_path='./'):
     Data1 = Fa(Data1_int, m, g, p_0, p_1, p_2)
     Data2 = Fa(Data2_int, m, g, p_0, p_1, p_2)
     
-    # 生成L2L训练数据对（下方飞机受上方飞机干扰）
+    # 生成xy训练数据对（下方飞机受上方飞机干扰）
     data_input, data_output = get_data(D1=Data1, D2=Data2, typ='fa_imu')
     
     # 保存为numpy格式
-    np.save(f'{save_path}/data_input_L2L.npy', data_input)
-    np.save(f'{save_path}/data_output_L2L.npy', data_output)
+    np.save(f'{save_path}/data_input_xy.npy', data_input)
+    np.save(f'{save_path}/data_output_xy.npy', data_output)
     
     print(f'✓ 预处理完成!')
     print(f'  输入形状: {data_input.shape}')
@@ -74,8 +74,8 @@ def preprocess_two_uav_data(uav1_csv, uav2_csv, save_path='./'):
 # 3. 使用示例
 if __name__ == '__main__':
     # 注意：uav1_csv是下方飞机（受扰动的飞机），uav2_csv是上方飞机（产生扰动的飞机）
-    uav_lower_file = 'data/uav0_20260205_000450.csv'  # UAV0在下面
-    uav_upper_file = 'data/uav1_20260205_000446.csv'  # UAV1在上面
+    uav_lower_file = 'data/uav0_xy.csv'  # UAV0在下面
+    uav_upper_file = 'data/uav1_xy.csv'  # UAV1在上面
     
     data_input, data_output = preprocess_two_uav_data(
         uav1_csv=uav_lower_file,   # D1: 下方飞机，输出其受到的气动力

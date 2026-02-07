@@ -25,8 +25,8 @@ from utils import set_generate, heatmap, vis
 
 parser = argparse.ArgumentParser(description='Two UAV Training Script')
 
-parser.add_argument('--data_input', type=str, default='data/data_input_L2L.npy', help='Path to preprocessed input data (.npy)')
-parser.add_argument('--data_output', type=str, default='data/data_output_L2L.npy', help='Path to preprocessed output data (.npy)')
+parser.add_argument('--data_input', type=str, default='data/data_input_all_random.npy', help='Path to preprocessed input data (.npy)')
+parser.add_argument('--data_output', type=str, default='data/data_output_all_random.npy', help='Path to preprocessed output data (.npy)')
 parser.add_argument('--output_path', default='model', help='Output path')
 parser.add_argument('--num_epochs', type=int, default=20, help='Number of training epochs')
 parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
