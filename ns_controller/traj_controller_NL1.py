@@ -120,8 +120,8 @@ class TrajController(Node):
         # 获取当前时间戳（微秒）
         tick = self.get_clock().now().nanoseconds // 1000
 
-        # 位置（（增加初始位置的偏移，UAV1在gazebo中始位置为2, 0, 0））
-        pos_x, pos_y, pos_z = pose[0, 0]+2.0, pose[1, 0], pose[2, 0]
+        # 位置（（增加初始位置的偏移，UAV1在gazebo中始位置为2, 2, 0））
+        pos_x, pos_y, pos_z = pose[0, 0]+2.0, pose[1, 0]+2.0, pose[2, 0]
 
         # 速度
         vel_x, vel_y, vel_z = velo[0, 0], velo[1, 0], velo[2, 0]
