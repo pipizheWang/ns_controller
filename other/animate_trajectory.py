@@ -146,11 +146,11 @@ class TrajectoryAnimator:
         self.data = {
             'timestamp': np.array([float(row['timestamp']) for row in rows]),
             'x': np.array([float(row['x']) for row in rows]),
-            'y': np.array([float(row['y']) for row in rows]),
-            'z': np.array([float(row['z']) for row in rows]),
-            'roll': np.array([float(row['roll']) for row in rows]),
-            'pitch': np.array([float(row['pitch']) for row in rows]),
-            'yaw': np.array([float(row['yaw']) for row in rows]),
+            'y': np.array([float(row['pos_y']) for row in rows]),
+            'z': np.array([float(row['pos_z']) for row in rows]),
+            'roll': np.array([0.0 for row in rows]),
+            'pitch': np.array([0.0 for row in rows]),
+            'yaw': np.array([0.0 for row in rows]),
             'x_des': np.array([float(row['x_des']) for row in rows]),
             'y_des': np.array([float(row['y_des']) for row in rows]),
             'z_des': np.array([float(row['z_des']) for row in rows]),
@@ -204,8 +204,8 @@ class TrajectoryAnimator:
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
         self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-5.5米
         
-        # 设置视角
-        self.ax.view_init(elev=25, azim=45)
+        # 设置视角（顺时针旋转90度：azim = 45 - 90 = -45）
+        self.ax.view_init(elev=25, azim=-45)
         
         # 绘制期望轨迹（半透明红色虚线）
         self.ax.plot(self.data['x_des'], self.data['y_des'], self.data['z_des'],
@@ -389,6 +389,7 @@ class DualTrajectoryAnimator:
         self.ax = None
         self.frame_skip0 = 1
         self.frame_skip1 = 1
+        self.sample_rate = 100.0  # 默认采样率
 
         # 时间戳对齐参数
         self.time_offset = None  # log1相对于log0的时间偏差
@@ -413,18 +414,19 @@ class DualTrajectoryAnimator:
         if not rows:
             raise ValueError(f"日志文件为空: {path}")
         data = {
-            'timestamp': np.array([float(row['timestamp']) for row in rows]),
-            'x': np.array([float(row['x']) for row in rows]),
-            'y': np.array([float(row['y']) for row in rows]),
-            'z': np.array([float(row['z']) for row in rows]),
-            'roll': np.array([float(row['roll']) for row in rows]),
-            'pitch': np.array([float(row['pitch']) for row in rows]),
-            'yaw': np.array([float(row['yaw']) for row in rows]),
-            'x_des': np.array([float(row['x_des']) for row in rows]),
-            'y_des': np.array([float(row['y_des']) for row in rows]),
-            'z_des': np.array([float(row['z_des']) for row in rows]),
+            'tick': np.array([float(row['tick']) for row in rows]),
+            'x': np.array([float(row['pos_x']) for row in rows]),
+            'y': np.array([float(row['pos_y']) for row in rows]),
+            'z': np.array([float(row['pos_z']) for row in rows]),
+            'roll': np.array([0.0 for row in rows]),
+            'pitch': np.array([0.0 for row in rows]),
+            'yaw': np.array([0.0 for row in rows]),
+            'x_des': np.array([float(row.get('x_des', row['pos_x'])) for row in rows]),
+            'y_des': np.array([float(row.get('y_des', row['pos_y'])) for row in rows]),
+            'z_des': np.array([float(row.get('z_des', row['pos_z'])) for row in rows]),
         }
-        data['time'] = data['timestamp'] - data['timestamp'][0]
+        # tick是微秒单位，转换为秒
+        data['time'] = (data['tick'] - data['tick'][0]) / 1e6
         return data, len(rows)
 
     def _align_timestamps(self):
@@ -432,69 +434,67 @@ class DualTrajectoryAnimator:
         根据时间戳对齐两个日志文件。
         处理整数秒偏差和采样率不一致的问题。
         """
-        ts0 = self.data0['timestamp']
-        ts1 = self.data1['timestamp']
+        # 使用已转换为秒的相对时间
+        time0 = self.data0['time']
+        time1 = self.data1['time']
         
         # 粗对齐：找到两个日志时间戳的大致对齐点
         # 取两个日志开始时间中较晚的作为对齐起点
-        start_ts0 = ts0[0]
-        start_ts1 = ts1[0]
-        aligned_start = max(start_ts0, start_ts1)
+        start_t0 = time0[0]
+        start_t1 = time1[0]
+        aligned_start = max(start_t0, start_t1)
         
         # 取两个日志结束时间中较早的作为对齐终点
-        end_ts0 = ts0[-1]
-        end_ts1 = ts1[-1]
-        aligned_end = min(end_ts0, end_ts1)
+        end_t0 = time0[-1]
+        end_t1 = time1[-1]
+        aligned_end = min(end_t0, end_t1)
         
         # 检查是否有重叠
         if aligned_start >= aligned_end:
             raise ValueError(
                 f"两个日志没有足够的时间重叠。"
-                f"log0: [{start_ts0:.3f}, {end_ts0:.3f}], "
-                f"log1: [{start_ts1:.3f}, {end_ts1:.3f}]"
+                f"log0: [{start_t0:.3f}, {end_t0:.3f}], "
+                f"log1: [{start_t1:.3f}, {end_t1:.3f}]"
             )
         
         # 计算时间偏差（log1相对于log0）
         # 这里我们用两个日志的起始时间差作为初始偏差估计
-        self.time_offset = start_ts1 - start_ts0
+        self.time_offset = start_t1 - start_t0
         
-        # 保存对齐的时间范围（使用相对时间）
-        self.aligned_time_range = (aligned_start - start_ts0, aligned_end - start_ts0)
+        # 保存对齐的时间范围（使用相对时间，单位：秒）
+        self.aligned_time_range = (aligned_start, aligned_end)
         self.aligned_duration = self.aligned_time_range[1] - self.aligned_time_range[0]
         
         print(f"\n时间戳对齐信息:")
-        print(f"  log0 起始时间戳: {start_ts0:.6f}")
-        print(f"  log1 起始时间戳: {start_ts1:.6f}")
+        print(f"  log0 时间范围: [{start_t0:.3f}s, {end_t0:.3f}s]")
+        print(f"  log1 时间范围: [{start_t1:.3f}s, {end_t1:.3f}s]")
         print(f"  时间偏差 (log1 - log0): {self.time_offset:.6f} 秒")
-        print(f"  对齐后的时间范围: [{self.aligned_time_range[0]:.2f}, {self.aligned_time_range[1]:.2f}] 秒")
-        print(f"  对齐后的总时长: {self.aligned_duration:.2f} 秒")
+        print(f"  对齐后的时间范围: [{self.aligned_time_range[0]:.3f}s, {self.aligned_time_range[1]:.3f}s]")
+        print(f"  对齐后的总时长: {self.aligned_duration:.3f} 秒")
 
-    def _find_nearest_frame(self, target_time, timestamps):
+    def _find_nearest_frame(self, target_time, time_array):
         """
         根据目标时间找到最接近的帧索引。
         使用二分查找加速搜索。
         
         Args:
-            target_time: 目标时间（相对时间）
-            timestamps: 时间戳数组（绝对时间戳）
+            target_time: 目标时间（秒）
+            time_array: 时间数组（秒）
         
         Returns:
             最接近的帧索引
         """
-        # 将相对时间转换为绝对时间戳
-        target_ts = target_time + timestamps[0]
-        
-        # 使用二分查找找到最接近的时间戳
-        idx = np.searchsorted(timestamps, target_ts)
+        # 使用二分查找找到最接近的时间点
+        idx = np.searchsorted(time_array, target_time)
         
         # 检查边界
         if idx <= 0:
             return 0
-        if idx >= len(timestamps):
-            return len(timestamps) - 1
+        if idx >= len(time_array):
+            return len(time_array) - 1
         
         # 比较两个相邻索引，返回更接近的一个
-        if abs(timestamps[idx] - target_ts) < abs(timestamps[idx-1] - target_ts):
+        if abs(time_array[idx] - target_time) < abs(time_array[idx-1] - target_time):
             return idx
         else:
             return idx - 1
@@ -508,17 +508,35 @@ class DualTrajectoryAnimator:
         # 根据时间戳对齐两个日志
         self._align_timestamps()
 
-        # 自动跳帧，使动画在合理帧数范围，基于对齐后的时长
-        target_frames = 400
-        # 使用对齐后的时间长度来计算跳帧率
-        estimated_total_frames = min(n0, n1)
-        frame_skip = max(1, estimated_total_frames // target_frames)
+        # 计算实际采样率
+        if n0 > 1:
+            avg_dt0 = self.data0['time'][-1] / (n0 - 1)
+            sample_rate0 = 1.0 / avg_dt0 if avg_dt0 > 0 else 100.0
+        else:
+            sample_rate0 = 100.0
+        print(f"检测到的采样率: {sample_rate0:.1f} Hz")
+
+        # 目标动画帧率: 30 FPS，目标总帧数: 200-300帧
+        target_animation_fps = 30
+        target_total_frames = 250
+        
+        # 计算需要的跳帧率
+        # 对于100Hz数据，10秒有1000条记录，我们希望最终只有250帧
+        estimated_total_frames = int(self.aligned_duration * sample_rate0)
+        frame_skip = max(1, estimated_total_frames // target_total_frames)
+        
+        # 对于100Hz数据，跳帧率至少为4（相当于25Hz）
+        if sample_rate0 > 50:
+            frame_skip = max(frame_skip, 5)  # 100Hz -> 20Hz
+        
         self.frame_skip0 = frame_skip
         self.frame_skip1 = frame_skip
+        self.sample_rate = sample_rate0
         
-        # 重新计算帧数（基于对齐后的时间范围）
-        n_frames_aligned = int(self.aligned_duration * 50 / frame_skip)  # 假设50Hz采样
-        print(f"自动跳帧率: {frame_skip}, 对齐后动画帧数约: {n_frames_aligned}")
+        # 重新计算帧数
+        n_frames_aligned = int(self.aligned_duration * sample_rate0 / frame_skip)
+        print(f"自动跳帧率: {frame_skip} (有效采样率: {sample_rate0/frame_skip:.1f} Hz)")
+        print(f"对齐后动画帧数约: {n_frames_aligned}")
 
     def setup_plot(self):
         self.fig = plt.figure(figsize=(14, 10))
@@ -546,7 +564,7 @@ class DualTrajectoryAnimator:
         self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
         self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-6米
 
-        self.ax.view_init(elev=25, azim=45)
+        self.ax.view_init(elev=25, azim=-45)
 
         # 期望轨迹（半透明虚线）：蓝色对应 log0，橙色对应 log1
         self.ax.plot(self.data0['x_des'], self.data0['y_des'], self.data0['z_des'],
@@ -656,19 +674,19 @@ class DualTrajectoryAnimator:
         使用共同的"参考时间"找到每个日志中最接近的数据点。
         """
         # 根据帧数计算参考时间（相对于对齐时间范围的开始）
-        ref_time = self.aligned_time_range[0] + frame * 0.02 * self.frame_skip0  # 50Hz采样
+        # 使用实际采样率
+        time_step = self.frame_skip0 / self.sample_rate
+        ref_time = self.aligned_time_range[0] + frame * time_step
         
         # 限制在对齐时间范围内
         ref_time = np.clip(ref_time, self.aligned_time_range[0], self.aligned_time_range[1])
         
-        # 在两个日志中找到最接近的帧
-        # 对于log0，直接使用相对时间
-        idx0 = self._find_nearest_frame(ref_time, self.data0['timestamp'])
+        # 在两个日志中找到最接近的帧（使用秒单位的time数组）
+        # 对于log0，直接使用参考时间
+        idx0 = self._find_nearest_frame(ref_time, self.data0['time'])
         
-        # 对于log1，需要考虑时间偏差
-        # log1的参考时间需要转换为log1的参考系统
-        ref_time_log1 = ref_time + self.time_offset
-        idx1 = self._find_nearest_frame(ref_time_log1, self.data1['timestamp'])
+        # 对于log1，使用相同的参考时间（因为都是相对时间）
+        idx1 = self._find_nearest_frame(ref_time, self.data1['time'])
         
         # 更新两个无人机
         pos0, att0_deg, err0 = self._update_one(idx0, self.data0, self.quad0, self.arm_lines0, self.rotor_circles0, self.trajectory_line0)
@@ -702,8 +720,14 @@ class DualTrajectoryAnimator:
 
         self.setup_plot()
         
-        # 基于对齐后的时长计算帧数（50Hz采样）
-        n_frames = int(self.aligned_duration * 50 / self.frame_skip0)
+        # 基于对齐后的时长和实际采样率计算帧数
+        n_frames = int(self.aligned_duration * self.sample_rate / self.frame_skip0)
+        
+        # 限制最大帧数，防止内存溢出
+        max_frames = 500
+        if n_frames > max_frames:
+            print(f"警告: 计算出的帧数 {n_frames} 过大，限制为 {max_frames} 帧")
+            n_frames = max_frames
 
         print(f"\n开始生成双日志动画（时间戳同步）...")
         print(f"对齐时间范围: {self.aligned_time_range[0]:.2f}s - {self.aligned_time_range[1]:.2f}s")
@@ -794,6 +818,59 @@ class DualTrajectoryAnimatorXZ(DualTrajectoryAnimator):
         self.ax.grid(True, alpha=0.3)
 
 
+class DualTrajectoryAnimatorYZ(DualTrajectoryAnimator):
+    """双日志轨迹动画：YZ平面视图（2D）"""
+
+    def setup_plot(self):
+        """设置YZ平面视角的绘图环境"""
+        self.fig = plt.figure(figsize=(14, 10))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+
+        self.fig.suptitle('Dual Quadrotor Trajectory Animation - YZ View (log0 + log1)', fontsize=16, fontweight='bold')
+        self.ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
+        self.ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
+        self.ax.set_zlabel('Z (m)', fontsize=12, labelpad=10)
+
+        # 结合两份日志的数据计算范围
+        all_x = np.concatenate([self.data0['x'], self.data0['x_des'], self.data1['x'], self.data1['x_des']])
+        all_y = np.concatenate([self.data0['y'], self.data0['y_des'], self.data1['y'], self.data1['y_des']])
+        all_z = np.concatenate([self.data0['z'], self.data0['z_des'], self.data1['z'], self.data1['z_des']])
+        max_range = np.array([
+            all_x.max() - all_x.min(),
+            all_y.max() - all_y.min(),
+            all_z.max() - all_z.min(),
+        ]).max() / 2.0
+        max_range *= 1.2
+        mid_x = (all_x.max() + all_x.min()) * 0.5
+        mid_y = (all_y.max() + all_y.min()) * 0.5
+        mid_z = (all_z.max() + all_z.min()) * 0.5
+        self.ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        self.ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        self.ax.set_zlim(4.5, 5.5)  # 固定z轴范围为4.5-5.5米
+
+        # YZ平面视角：仰角0度（平视），方位角0度（正对YZ平面）
+        self.ax.view_init(elev=0, azim=0)
+
+        # 期望轨迹（半透明虚线）：蓝色对应 log0，橙色对应 log1
+        self.ax.plot(self.data0['x_des'], self.data0['y_des'], self.data0['z_des'],
+                     color='#1f77b4', linestyle='--', linewidth=2, alpha=0.35, label='Desired 0')
+        self.ax.plot(self.data1['x_des'], self.data1['y_des'], self.data1['z_des'],
+                     color='#ff7f0e', linestyle='--', linewidth=2, alpha=0.35, label='Desired 1')
+
+        # 起点/终点标记
+        self.ax.scatter(self.data0['x'][0], self.data0['y'][0], self.data0['z'][0],
+                        c='green', s=160, marker='o', label='Start 0', zorder=10)
+        self.ax.scatter(self.data0['x'][-1], self.data0['y'][-1], self.data0['z'][-1],
+                        c='red', s=160, marker='s', label='End 0', zorder=10)
+        self.ax.scatter(self.data1['x'][0], self.data1['y'][0], self.data1['z'][0],
+                        c='lime', s=140, marker='o', label='Start 1', zorder=10)
+        self.ax.scatter(self.data1['x'][-1], self.data1['y'][-1], self.data1['z'][-1],
+                        c='darkred', s=140, marker='s', label='End 1', zorder=10)
+
+        self.ax.legend(loc='upper right', fontsize=10)
+        self.ax.grid(True, alpha=0.3)
+
+
 def main():
     """主函数"""
     import argparse
@@ -810,8 +887,8 @@ def main():
                        help='Quadrotor arm length in meters (default: 0.5)')
     parser.add_argument('--list', action='store_true',
                        help='List all log files in log directory')
-    parser.add_argument('--view', type=str, default='3d', choices=['3d', 'xz'],
-                       help='View mode: 3d (default) or xz (XZ plane 2D view)')
+    parser.add_argument('--view', type=str, default='3d', choices=['3d', 'xz', 'yz'],
+                       help='View mode: 3d (default), xz (XZ plane 2D view), or yz (YZ plane 2D view)')
     
     args = parser.parse_args()
     
@@ -895,6 +972,9 @@ def main():
         if args.view == 'xz':
             animator = DualTrajectoryAnimatorXZ(log0, log1, arm_length=args.arm_length)
             print("使用XZ平面视图模式")
+        elif args.view == 'yz':
+            animator = DualTrajectoryAnimatorYZ(log0, log1, arm_length=args.arm_length)
+            print("使用YZ平面视图模式")
         else:
             animator = DualTrajectoryAnimator(log0, log1, arm_length=args.arm_length)
             print("使用3D视图模式")

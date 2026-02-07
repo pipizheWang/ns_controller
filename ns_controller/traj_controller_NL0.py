@@ -27,7 +27,7 @@ class TrajController(Node):
         # 控制频率
         self.control_rate = 100.0
         # UAV0 使用 FLAG=0（z=1.0），与 UAV1 水平轨迹一致
-        self.traj = TargetTraj(FLAG=0)
+        self.traj = TargetTraj(FLAG=6)
 
         # 初始化时钟
         self.clock = Clock()

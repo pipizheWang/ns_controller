@@ -45,22 +45,39 @@ class FlightLogPlotter:
         if len(rows) == 0:
             raise ValueError("日志文件为空")
         
-        # 提取数据
+        # 提取数据（适配新的字段名）
+        # tick是微秒单位
         self.data = {
-            'timestamp': np.array([float(row['timestamp']) for row in rows]),
-            'x': np.array([float(row['x']) for row in rows]),
-            'y': np.array([float(row['y']) for row in rows]),
-            'z': np.array([float(row['z']) for row in rows]),
-            'vx': np.array([float(row['vx']) for row in rows]),
-            'vy': np.array([float(row['vy']) for row in rows]),
-            'vz': np.array([float(row['vz']) for row in rows]),
-            'roll': np.array([float(row['roll']) for row in rows]),
-            'pitch': np.array([float(row['pitch']) for row in rows]),
-            'yaw': np.array([float(row['yaw']) for row in rows]),
-            'x_des': np.array([float(row['x_des']) for row in rows]),
-            'y_des': np.array([float(row['y_des']) for row in rows]),
-            'z_des': np.array([float(row['z_des']) for row in rows]),
+            'timestamp': np.array([float(row['tick']) for row in rows]),
+            'x': np.array([float(row['pos_x']) for row in rows]),
+            'y': np.array([float(row['pos_y']) for row in rows]),
+            'z': np.array([float(row['pos_z']) for row in rows]),
+            'vx': np.array([float(row['vel_x']) for row in rows]),
+            'vy': np.array([float(row['vel_y']) for row in rows]),
+            'vz': np.array([float(row['vel_z']) for row in rows]),
         }
+        
+        # 姿态角（如果存在）
+        if 'roll' in rows[0]:
+            self.data['roll'] = np.array([float(row['roll']) for row in rows])
+            self.data['pitch'] = np.array([float(row['pitch']) for row in rows])
+            self.data['yaw'] = np.array([float(row['yaw']) for row in rows])
+        else:
+            # 如果没有姿态角数据，使用全零
+            self.data['roll'] = np.zeros(len(rows))
+            self.data['pitch'] = np.zeros(len(rows))
+            self.data['yaw'] = np.zeros(len(rows))
+        
+        # 期望位置（如果存在）
+        if 'x_des' in rows[0]:
+            self.data['x_des'] = np.array([float(row['x_des']) for row in rows])
+            self.data['y_des'] = np.array([float(row['y_des']) for row in rows])
+            self.data['z_des'] = np.array([float(row['z_des']) for row in rows])
+        else:
+            # 如果没有期望位置，使用实际位置（误差为0）
+            self.data['x_des'] = self.data['x'].copy()
+            self.data['y_des'] = self.data['y'].copy()
+            self.data['z_des'] = self.data['z'].copy()
         
         # 检查是否有扰动力数据列（NS控制器生成的日志）
         self.has_aero_data = 'Fa_z' in rows[0]
@@ -68,7 +85,8 @@ class FlightLogPlotter:
             self.data['Fa_z'] = np.array([float(row['Fa_z']) for row in rows])
         
         # 将时间戳转换为相对时间（从0开始）
-        self.data['time'] = self.data['timestamp'] - self.data['timestamp'][0]
+        # tick是微秒单位，转换为秒
+        self.data['time'] = (self.data['timestamp'] - self.data['timestamp'][0]) / 1e6
         
         # 计算跟踪误差
         self.data['error_x'] = self.data['x'] - self.data['x_des']
@@ -97,36 +115,37 @@ def _align_timestamps_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotte
         plotter0: 第一个日志绘图器
         plotter1: 第二个日志绘图器
     """
-    ts0 = plotter0.data['timestamp']
-    ts1 = plotter1.data['timestamp']
+    # 使用相对时间（秒）进行对齐
+    time0 = plotter0.data['time']
+    time1 = plotter1.data['time']
     
     # 粗对齐：找到两个日志时间戳的大致对齐点
     # 取两个日志开始时间中较晚的作为对齐起点
-    start_ts0 = ts0[0]
-    start_ts1 = ts1[0]
-    aligned_start = max(start_ts0, start_ts1)
+    start_t0 = time0[0]
+    start_t1 = time1[0]
+    aligned_start = max(start_t0, start_t1)
     
     # 取两个日志结束时间中较早的作为对齐终点
-    end_ts0 = ts0[-1]
-    end_ts1 = ts1[-1]
-    aligned_end = min(end_ts0, end_ts1)
+    end_t0 = time0[-1]
+    end_t1 = time1[-1]
+    aligned_end = min(end_t0, end_t1)
     
     # 检查是否有重叠
     if aligned_start >= aligned_end:
         raise ValueError(
             f"两个日志没有足够的时间重叠。"
-            f"log0: [{start_ts0:.3f}, {end_ts0:.3f}], "
-            f"log1: [{start_ts1:.3f}, {end_ts1:.3f}]"
+            f"log0: [{start_t0:.3f}s, {end_t0:.3f}s], "
+            f"log1: [{start_t1:.3f}s, {end_t1:.3f}s]"
         )
     
     # 计算时间偏差（log1相对于log0）
-    time_offset = start_ts1 - start_ts0
+    time_offset = start_t1 - start_t0
     
     # 找到对齐起点和终点对应的索引
-    idx0_start = np.searchsorted(ts0, aligned_start)
-    idx0_end = np.searchsorted(ts0, aligned_end)
-    idx1_start = np.searchsorted(ts1, aligned_start)
-    idx1_end = np.searchsorted(ts1, aligned_end)
+    idx0_start = np.searchsorted(time0, aligned_start)
+    idx0_end = np.searchsorted(time0, aligned_end)
+    idx1_start = np.searchsorted(time1, aligned_start)
+    idx1_end = np.searchsorted(time1, aligned_end)
     
     # 设置对齐后的索引范围
     plotter0.aligned_indices = (idx0_start, idx0_end)
@@ -135,11 +154,11 @@ def _align_timestamps_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotte
     aligned_duration = aligned_end - aligned_start
     
     print(f"\n时间戳对齐信息:")
-    print(f"  log0 起始时间戳: {start_ts0:.6f}")
-    print(f"  log1 起始时间戳: {start_ts1:.6f}")
+    print(f"  log0 时间范围: [{start_t0:.3f}s, {end_t0:.3f}s]")
+    print(f"  log1 时间范围: [{start_t1:.3f}s, {end_t1:.3f}s]")
     print(f"  时间偏差 (log1 - log0): {time_offset:.6f} 秒")
-    print(f"  对齐时间范围: [{aligned_start:.3f}, {aligned_end:.3f}]")
-    print(f"  对齐总时长: {aligned_duration:.2f} 秒")
+    print(f"  对齐后的时间范围: [{aligned_start:.3f}s, {aligned_end:.3f}s]")
+    print(f"  对齐后的总时长: {aligned_duration:.2f} 秒")
     print(f"  log0 对齐数据范围: [{idx0_start}, {idx0_end}] ({idx0_end - idx0_start} 个点)")
     print(f"  log1 对齐数据范围: [{idx1_start}, {idx1_end}] ({idx1_end - idx1_start} 个点)")
 

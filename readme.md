@@ -4,6 +4,7 @@
 ## 终端 0：启动 PX4 仿真
 
 ### 启动自研下洗力模块
+```bash
 conda deactivate
 cd ~/gz_downwash_plugin
 export GZ_SIM_RESOURCE_PATH=~/PX4-Autopilot/Tools/simulation/gz/models:$GZ_SIM_RESOURCE_PATH
@@ -21,6 +22,8 @@ source build/px4_sitl_default/rootfs/gz_env.sh
 PX4_SYS_AUTOSTART=4001 PX4_GZ_WORLD=x500_downwash_world PX4_SIM_MODEL=gz_x500_nolegcol PX4_GZ_MODEL_NAME=x500_1 ./build/px4_sitl_default/bin/px4 -i 1
 
 gz sim -r "$PWD/worlds/two_drones_downwash.sdf"
+```
+
 ## 终端 1：启动 PX4 仿真
 
 ### 环境准备
