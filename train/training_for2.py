@@ -25,12 +25,16 @@ from utils import set_generate, heatmap, vis
 
 parser = argparse.ArgumentParser(description='Two UAV Training Script')
 
-parser.add_argument('--data_input', type=str, default='data/data_input_all_random.npy', help='Path to preprocessed input data (.npy)')
-parser.add_argument('--data_output', type=str, default='data/data_output_all_random.npy', help='Path to preprocessed output data (.npy)')
+parser.add_argument('--data_input', type=str, default='data/data_input_balanced.npy', help='Path to preprocessed input data (.npy)')
+parser.add_argument('--data_output', type=str, default='data/data_output_balanced.npy', help='Path to preprocessed output data (.npy)')
 parser.add_argument('--output_path', default='model', help='Output path')
-parser.add_argument('--num_epochs', type=int, default=20, help='Number of training epochs')
+parser.add_argument('--num_epochs', type=int, default=100, help='Number of training epochs (default: 100)')
 parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
 parser.add_argument('--hidden_dim', type=int, default=20, help='Hidden dimension')
+parser.add_argument('--learning_rate', type=float, default=1e-3, help='Initial learning rate')
+parser.add_argument('--early_stop_patience', type=int, default=30, help='Early stopping patience')
+parser.add_argument('--lr_patience', type=int, default=15, help='Learning rate scheduler patience')
+parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping value')
 
 opt = parser.parse_args()
 
@@ -103,8 +107,18 @@ print('Created networks: phi_net and rho_net')
 
 # 损失函数和优化器
 criterion = nn.MSELoss()
-optimizer_phi = optim.Adam(phi_net.parameters(), lr=1e-3)
-optimizer_rho = optim.Adam(rho_net.parameters(), lr=1e-3)
+optimizer_phi = optim.Adam(phi_net.parameters(), lr=opt.learning_rate)
+optimizer_rho = optim.Adam(rho_net.parameters(), lr=opt.learning_rate)
+
+# 学习率调度器 (当验证loss不再下降时降低学习率)
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+scheduler_phi = ReduceLROnPlateau(optimizer_phi, mode='min', factor=0.5,
+                                  patience=opt.lr_patience, verbose=True, min_lr=1e-6)
+scheduler_rho = ReduceLROnPlateau(optimizer_rho, mode='min', factor=0.5,
+                                  patience=opt.lr_patience, verbose=True, min_lr=1e-6)
+print(f'Optimizer: Adam with initial lr={opt.learning_rate}')
+print(f'LR Scheduler: ReduceLROnPlateau (patience={opt.lr_patience}, factor=0.5)')
+print(f'Gradient clipping: {opt.grad_clip}')
 
 ##### Part IV: 训练 #####
 print('\n' + '=' * 60)
@@ -142,29 +156,49 @@ with torch.no_grad():
 # 开始训练
 Train_loss_history = []
 Val_loss_history = []
+Learning_rate_history = []
+
+# 早停和最佳模型保存
+best_val_loss = float('inf')
+best_epoch = 0
+patience_counter = 0
+best_model_state = None
+
+import time
+start_time = time.time()
+
+print(f'\n⏱️  Training started at {time.strftime("%H:%M:%S")}')
+print(f'Target: Train until convergence or {num_epochs} epochs')
+print(f'Early stopping patience: {opt.early_stop_patience} epochs\n')
 
 for epoch in range(num_epochs):
+    epoch_start_time = time.time()
     phi_net.train()
     rho_net.train()
-    
+
     epoch_loss = 0.0
-    
+
     for batch_idx, batch in enumerate(trainloader):
         # 前向传播
         loss, _ = compute_loss(batch, phi_net, rho_net, criterion)
-        
+
         # 反向传播
         optimizer_phi.zero_grad()
         optimizer_rho.zero_grad()
         loss.backward()
+
+        # 梯度裁剪 (防止梯度爆炸)
+        torch.nn.utils.clip_grad_norm_(phi_net.parameters(), opt.grad_clip)
+        torch.nn.utils.clip_grad_norm_(rho_net.parameters(), opt.grad_clip)
+
         optimizer_phi.step()
         optimizer_rho.step()
-        
+
         epoch_loss += loss.item()
-    
+
     avg_train_loss = epoch_loss / len(trainloader)
     Train_loss_history.append(avg_train_loss)
-    
+
     # 计算验证损失
     phi_net.eval()
     rho_net.eval()
@@ -179,32 +213,94 @@ for epoch in range(num_epochs):
             val_epoch_loss += loss.item()
         avg_val_loss = val_epoch_loss / len(valset)
         Val_loss_history.append(avg_val_loss)
-    
-    # 每5个epoch打印一次
-    if (epoch + 1) % 5 == 0 or epoch == 0:
-        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
 
-print('Training finished!')
+    # 学习率调度
+    current_lr_phi = optimizer_phi.param_groups[0]['lr']
+    current_lr_rho = optimizer_rho.param_groups[0]['lr']
+    Learning_rate_history.append(current_lr_phi)
 
-# 1. 绘制训练和验证损失曲线对比
-plt.figure(figsize=(12, 5))
-plt.subplot(1, 2, 1)
-plt.plot(Train_loss_history, label='Training Loss', linewidth=2)
-plt.plot(Val_loss_history, label='Validation Loss', linewidth=2)
-plt.xlabel('Epoch', fontsize=12)
-plt.ylabel('Loss', fontsize=12)
-plt.title('Training vs Validation Loss', fontsize=14)
-plt.legend(fontsize=10)
-plt.grid(True, alpha=0.3)
+    scheduler_phi.step(avg_val_loss)
+    scheduler_rho.step(avg_val_loss)
 
-plt.subplot(1, 2, 2)
-plt.semilogy(Train_loss_history, label='Training Loss', linewidth=2)
-plt.semilogy(Val_loss_history, label='Validation Loss', linewidth=2)
-plt.xlabel('Epoch', fontsize=12)
-plt.ylabel('Loss (log scale)', fontsize=12)
-plt.title('Loss Curve (Log Scale)', fontsize=14)
-plt.legend(fontsize=10)
-plt.grid(True, alpha=0.3)
+    # 检查是否为最佳模型
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        best_epoch = epoch + 1
+        patience_counter = 0
+        # 保存最佳模型状态
+        best_model_state = {
+            'phi_net': phi_net.state_dict(),
+            'rho_net': rho_net.state_dict(),
+            'epoch': best_epoch,
+            'val_loss': best_val_loss
+        }
+        best_indicator = ' ⭐ (Best!)'
+    else:
+        patience_counter += 1
+        best_indicator = ''
+
+    # 计算epoch用时
+    epoch_time = time.time() - epoch_start_time
+
+    # 打印进度
+    if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == num_epochs - 1 or best_indicator:
+        print(f'Epoch [{epoch+1:3d}/{num_epochs}] | '
+              f'Train: {avg_train_loss:8.4f} | Val: {avg_val_loss:8.4f} | '
+              f'LR: {current_lr_phi:.2e} | Time: {epoch_time:.1f}s{best_indicator}')
+
+    # 早停检查
+    if patience_counter >= opt.early_stop_patience:
+        print(f'\n🛑 Early stopping triggered at epoch {epoch+1}')
+        print(f'   No improvement for {opt.early_stop_patience} epochs')
+        print(f'   Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}')
+        break
+
+training_time = time.time() - start_time
+print(f'\n✅ Training finished in {training_time/60:.1f} minutes')
+print(f'   Best model: Epoch {best_epoch} with Val Loss = {best_val_loss:.6f}')
+
+# 恢复最佳模型
+if best_model_state is not None:
+    phi_net.load_state_dict(best_model_state['phi_net'])
+    rho_net.load_state_dict(best_model_state['rho_net'])
+    print(f'   ✓ Restored best model from epoch {best_epoch}')
+
+# 1. 绘制训练和验证损失曲线对比（改进版，3个子图）
+fig = plt.figure(figsize=(18, 5))
+
+# 子图1: 线性坐标
+ax1 = plt.subplot(1, 3, 1)
+ax1.plot(Train_loss_history, label='Training Loss', linewidth=2, color='#4ECDC4')
+ax1.plot(Val_loss_history, label='Validation Loss', linewidth=2, color='#FF6B6B')
+ax1.axvline(best_epoch-1, color='green', linestyle='--', linewidth=1.5,
+            alpha=0.7, label=f'Best (Epoch {best_epoch})')
+ax1.set_xlabel('Epoch', fontsize=12)
+ax1.set_ylabel('Loss', fontsize=12)
+ax1.set_title('Training vs Validation Loss', fontsize=14, fontweight='bold')
+ax1.legend(fontsize=10)
+ax1.grid(True, alpha=0.3)
+
+# 子图2: 对数坐标
+ax2 = plt.subplot(1, 3, 2)
+ax2.semilogy(Train_loss_history, label='Training Loss', linewidth=2, color='#4ECDC4')
+ax2.semilogy(Val_loss_history, label='Validation Loss', linewidth=2, color='#FF6B6B')
+ax2.axvline(best_epoch-1, color='green', linestyle='--', linewidth=1.5,
+            alpha=0.7, label=f'Best (Epoch {best_epoch})')
+ax2.set_xlabel('Epoch', fontsize=12)
+ax2.set_ylabel('Loss (log scale)', fontsize=12)
+ax2.set_title('Loss Curve (Log Scale)', fontsize=14, fontweight='bold')
+ax2.legend(fontsize=10)
+ax2.grid(True, alpha=0.3, which='both')
+
+# 子图3: 学习率历史
+ax3 = plt.subplot(1, 3, 3)
+ax3.semilogy(Learning_rate_history, label='Learning Rate', linewidth=2, color='#95E1D3')
+ax3.set_xlabel('Epoch', fontsize=12)
+ax3.set_ylabel('Learning Rate (log scale)', fontsize=12)
+ax3.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+ax3.grid(True, alpha=0.3, which='both')
+ax3.legend(fontsize=10)
+
 plt.tight_layout()
 plt.savefig(f'{vis_dir}/loss_curves.png', dpi=150, bbox_inches='tight')
 plt.close()
@@ -239,13 +335,68 @@ with torch.no_grad():
     val_loss = total_loss / len(valset)
     print(f'Validation loss: {val_loss:.6f}')
 
-# 保存模型
+# 保存模型（包含完整训练信息）
 phi_net.cpu()
 rho_net.cpu()
 
 torch.save(phi_net.state_dict(), f'{output_name}/phi_net.pth')
 torch.save(rho_net.state_dict(), f'{output_name}/rho_net.pth')
-print(f'\n✓ Models saved to: {output_name}/')
+
+# 保存完整的checkpoint（包含训练历史）
+checkpoint = {
+    'phi_net_state_dict': phi_net.state_dict(),
+    'rho_net_state_dict': rho_net.state_dict(),
+    'train_loss_history': Train_loss_history,
+    'val_loss_history': Val_loss_history,
+    'learning_rate_history': Learning_rate_history,
+    'best_epoch': best_epoch,
+    'best_val_loss': best_val_loss,
+    'final_train_loss': train_loss,
+    'final_val_loss': val_loss,
+    'hyperparameters': {
+        'hidden_dim': hidden_dim,
+        'batch_size': batch_size,
+        'learning_rate': opt.learning_rate,
+        'num_epochs_trained': len(Train_loss_history),
+        'input_dim': 6,
+        'output_dim': 1
+    }
+}
+torch.save(checkpoint, f'{output_name}/checkpoint_best.pth')
+
+# 保存训练日志（Part 1 - 基本信息）
+with open(f'{output_name}/training_log.txt', 'w') as f:
+    f.write('=' * 70 + '\n')
+    f.write('Training Log - Two UAV Downwash Force Prediction\n')
+    f.write('=' * 70 + '\n\n')
+    f.write(f'Training Date: {time.strftime("%Y-%m-%d %H:%M:%S")}\n')
+    f.write(f'Training Time: {training_time/60:.1f} minutes\n\n')
+
+    f.write('Hyperparameters:\n')
+    f.write(f'  - Hidden Dimension: {hidden_dim}\n')
+    f.write(f'  - Batch Size: {batch_size}\n')
+    f.write(f'  - Initial Learning Rate: {opt.learning_rate}\n')
+    f.write(f'  - Epochs Trained: {len(Train_loss_history)}\n')
+    f.write(f'  - Early Stop Patience: {opt.early_stop_patience}\n')
+    f.write(f'  - LR Scheduler Patience: {opt.lr_patience}\n')
+    f.write(f'  - Gradient Clipping: {opt.grad_clip}\n\n')
+
+    f.write('Dataset:\n')
+    f.write(f'  - Training Samples: {len(trainset)}\n')
+    f.write(f'  - Validation Samples: {len(valset)}\n')
+    f.write(f'  - Input Data: {opt.data_input}\n')
+    f.write(f'  - Output Data: {opt.data_output}\n\n')
+
+    f.write('Training Results:\n')
+    f.write(f'  - Best Epoch: {best_epoch}\n')
+    f.write(f'  - Best Val Loss: {best_val_loss:.6f}\n')
+    f.write(f'  - Initial Loss: {initial_loss:.6f}\n')
+    f.write(f'  - Final Train Loss: {train_loss:.6f}\n')
+    f.write(f'  - Final Val Loss: {val_loss:.6f}\n')
+    f.write(f'  - Loss Reduction: {100*(initial_loss-train_loss)/initial_loss:.2f}%\n\n')
+
+print(f'✓ Models saved to: {output_name}/')
+print(f'✓ Full checkpoint saved to: {output_name}/checkpoint_best.pth')
 
 ##### Part VI: 可视化 #####
 print('\n' + '=' * 60)
@@ -390,6 +541,40 @@ except Exception as e:
     print(f'⚠ Warning: Validation plots failed ({type(e).__name__}: {e}), skipping...')
     import traceback
     traceback.print_exc()
+
+# 追加验证指标到训练日志（Part 2 - 验证指标）
+try:
+    from sklearn.metrics import r2_score, mean_squared_error
+    mae = np.mean(np.abs(errors))
+    rmse = np.sqrt(mean_squared_error(val_output_np[:, 0], predictions[:, 0]))
+    max_error = np.max(np.abs(errors))
+    r2 = r2_score(val_output_np[:, 0], predictions[:, 0])
+
+    with open(f'{output_name}/training_log.txt', 'a') as f:
+        f.write('Validation Metrics:\n')
+        f.write(f'  - MAE: {mae:.6f} gram\n')
+        f.write(f'  - RMSE: {rmse:.6f} gram\n')
+        f.write(f'  - Max Error: {max_error:.6f} gram\n')
+        f.write(f'  - R² Score: {r2:.6f}\n\n')
+
+        # 性能评级
+        f.write('Performance Rating:\n')
+        if r2 > 0.99:
+            f.write('  ⭐⭐⭐⭐⭐ Excellent (R² > 0.99)\n')
+        elif r2 > 0.95:
+            f.write('  ⭐⭐⭐⭐ Very Good (R² > 0.95)\n')
+        elif r2 > 0.90:
+            f.write('  ⭐⭐⭐ Good (R² > 0.90)\n')
+        elif r2 > 0.80:
+            f.write('  ⭐⭐ Fair (R² > 0.80)\n')
+        else:
+            f.write('  ⭐ Poor (R² < 0.80)\n')
+
+    print(f'✓ Training log updated with validation metrics: {output_name}/training_log.txt')
+
+except Exception as e:
+    print(f'⚠ Warning: Could not append validation metrics to log ({e})')
+
 print('\n' + '=' * 60)
 print('TRAINING COMPLETE!')
 print('=' * 60)
@@ -397,7 +582,13 @@ print(f'Summary:')
 print(f'  - Scenario: {scenario}')
 print(f'  - Training samples: {len(trainset)}')
 print(f'  - Validation samples: {len(valset)}')
+print(f'  - Best epoch: {best_epoch}')
 print(f'  - Initial loss: {initial_loss:.6f}')
 print(f'  - Final training loss: {train_loss:.6f}')
 print(f'  - Validation loss: {val_loss:.6f}')
+try:
+    print(f'  - R² Score: {r2:.6f}')
+    print(f'  - RMSE: {rmse:.6f} gram')
+except:
+    pass
 print(f'  - Models saved to: {output_name}/')

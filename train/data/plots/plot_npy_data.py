@@ -115,10 +115,10 @@ def main():
     
     parser = argparse.ArgumentParser(description='Plot npy data visualization')
     parser.add_argument('--input', type=str, 
-                       default=str(data_dir / 'data_input_all.npy'),
+                       default=str(data_dir / 'data_input_balanced.npy'),
                        help='Input npy file path (shape: N, D_in)')
     parser.add_argument('--output', type=str, 
-                       default=str(data_dir / 'data_output_all.npy'),
+                       default=str(data_dir / 'data_output_balanced.npy'),
                        help='Output npy file path (shape: N, D_out)')
     parser.add_argument('--save_dir', type=str, 
                        default=str(script_dir),  # Save in data/plots/

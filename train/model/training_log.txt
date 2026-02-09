@@ -1,0 +1,38 @@
+======================================================================
+Training Log - Two UAV Downwash Force Prediction
+======================================================================
+
+Training Date: 2026-02-10 01:05:41
+Training Time: 0.0 minutes
+
+Hyperparameters:
+  - Hidden Dimension: 20
+  - Batch Size: 256
+  - Initial Learning Rate: 0.001
+  - Epochs Trained: 100
+  - Early Stop Patience: 30
+  - LR Scheduler Patience: 15
+  - Gradient Clipping: 1.0
+
+Dataset:
+  - Training Samples: 1680
+  - Validation Samples: 420
+  - Input Data: data/data_input_balanced.npy
+  - Output Data: data/data_output_balanced.npy
+
+Training Results:
+  - Best Epoch: 99
+  - Best Val Loss: 9.683272
+  - Initial Loss: 1626.611747
+  - Final Train Loss: 10.452882
+  - Final Val Loss: 12.449695
+  - Loss Reduction: 99.36%
+
+Validation Metrics:
+  - MAE: 2.417108 gram
+  - RMSE: 3.528413 gram
+  - Max Error: 18.780853 gram
+  - R² Score: 0.991133
+
+Performance Rating:
+  ⭐⭐⭐⭐⭐ Excellent (R² > 0.99)
