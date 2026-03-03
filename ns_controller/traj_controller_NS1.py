@@ -6,7 +6,7 @@ import numpy as np
 from numpy.linalg import norm
 from rclpy.node import Node
 from mavros_msgs.msg import AttitudeTarget
-from geometry_msgs.msg import PoseStamped, TwistStamped, Vector3Stamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from .traj import TargetTraj
@@ -30,9 +30,6 @@ class TrajController(Node):
         self.current_pa = None
         self.current_velo = None
 
-        # 气动力估计（z方向，世界系向上为正）
-        self.aero_force_z = 0.0
-
         self.traj_t = -1.0
         self.t_0 = self.clock.now()
 
@@ -45,9 +42,7 @@ class TrajController(Node):
         self.velo_sub_ = self.create_subscription(
             TwistStamped, '/uav1/local_position/velocity_local', self.velo_cb, qos_best_effort)
 
-        # 订阅 UAV1 气动扰动力估计
-        self.aero_force_sub_ = self.create_subscription(
-            Vector3Stamped, '/uav1/estimated_aero_force', self.aero_force_cb, qos_best_effort)
+        # UAV1 为上层飞机，不受下洗扰动影响，无需订阅气动扰动力估计
 
         self.controller_pub_ = self.create_publisher(
             AttitudeTarget, '/uav1/setpoint_raw/attitude', qos_reliable)
@@ -89,14 +84,13 @@ class TrajController(Node):
             'x', 'y', 'z',
             'vx', 'vy', 'vz',
             'roll', 'pitch', 'yaw',
-            'x_des', 'y_des', 'z_des',
-            'Fa_z', 'aero_comp_z'
+            'x_des', 'y_des', 'z_des'
         ]
         self.csv_writer.writerow(header)
         self.log_file.flush()
         self.get_logger().info(f"Flight log initialized: {self.log_file_path}")
 
-    def log_flight_data(self, pose, velo, rotation_matrix, traj_p, aero_comp_z):
+    def log_flight_data(self, pose, velo, rotation_matrix, traj_p):
         r = R.from_matrix(rotation_matrix)
         roll, pitch, yaw = r.as_euler('xyz', degrees=True)
         current_time = self.get_clock().now().nanoseconds * 1e-9
@@ -105,9 +99,7 @@ class TrajController(Node):
             pose[0, 0]+4.0, pose[1, 0], pose[2, 0],
             velo[0, 0], velo[1, 0], velo[2, 0],
             roll, pitch, yaw,
-            traj_p[0, 0]+4.0, traj_p[1, 0], traj_p[2, 0],
-            self.aero_force_z,
-            aero_comp_z
+            traj_p[0, 0]+4.0, traj_p[1, 0], traj_p[2, 0]
         ]
         self.csv_writer.writerow(data_row)
         self.log_file.flush()
@@ -123,9 +115,6 @@ class TrajController(Node):
 
     def velo_cb(self, msg):
         self.current_velo = msg
-
-    def aero_force_cb(self, msg: Vector3Stamped):
-        self.aero_force_z = float(msg.vector.z)
 
     def update_trajectory_time(self, traj_mode):
         if traj_mode and self.traj_t == -1.0:
@@ -161,13 +150,12 @@ class TrajController(Node):
         return pose, velo, rotation_matrix, body_z
 
     def calculate_desired_force(self, pose, velo, traj_p, traj_v, traj_a, sliding_gain, tracking_gain, mass):
+        # UAV1 为上层飞机，不受下洗扰动影响，无气动力补偿
         s = (velo - traj_v + sliding_gain * (pose - traj_p))
         a_r = traj_a - sliding_gain * (velo - traj_v) + np.array([[0], [0], [self.gravity]])
         F_sp = a_r - tracking_gain * s
-        aero_comp_z = self.aero_force_z / mass
-        F_sp[2, 0] += aero_comp_z
         F_sp = np.clip(F_sp, np.array([[-5.0], [-5.0], [0.0]]), np.array([[5.0], [5.0], [19.6]]))
-        return F_sp, aero_comp_z
+        return F_sp
 
     def calculate_attitude_from_force(self, F_sp, body_z, yaw_sp):
         thrust = float(np.dot(F_sp.T, body_z))
@@ -206,7 +194,7 @@ class TrajController(Node):
         traj_yaw = self.traj.yaw(self.traj_t)
 
         pose, velo, rotation_matrix, body_z = self.get_current_state()
-        F_sp, aero_comp_z = self.calculate_desired_force(
+        F_sp = self.calculate_desired_force(
             pose, velo, traj_p, traj_v, traj_a, sliding_gain, tracking_gain, mass)
 
         attitude_target = self.calculate_attitude_from_force(F_sp, body_z, traj_yaw)
@@ -214,12 +202,12 @@ class TrajController(Node):
 
         # 只有在轨迹跟踪模式下才记录日志
         if traj_mode and self.traj_t >= 0:
-            self.log_flight_data(pose, velo, rotation_matrix, traj_p, aero_comp_z)
+            self.log_flight_data(pose, velo, rotation_matrix, traj_p)
 
         if self.get_logger().get_effective_level() <= rclpy.logging.LoggingSeverity.DEBUG:
             position_error = norm(pose - traj_p)
             self.get_logger().debug(
-                f"Traj time: {self.traj_t:.2f}, Thrust: {attitude_target.thrust:.3f}, PosErr: {position_error:.3f}m, Fa_z={self.aero_force_z:.3f}N, a_comp={aero_comp_z:.3f}m/s^2")
+                f"Traj time: {self.traj_t:.2f}, Thrust: {attitude_target.thrust:.3f}, PosErr: {position_error:.3f}m")
 
 
 def main(args=None):

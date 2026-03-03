@@ -180,9 +180,10 @@ class TrajController(Node):
         F_sp = a_r - tracking_gain * s  # 这里仍是“期望加速度”形式
 
         # 扰动力补偿：将估计的气动力转换为加速度并叠加
-        # 假设 aero_force_z 为正表示向上额外升力，补偿应增加期望加速度以抵消扰动不利影响
-        aero_comp_z = self.aero_force_z / mass  # 加速度 (m/s^2)
-        F_sp[2, 0] += aero_comp_z
+        # downwash 使 Fa_z < 0（向下），实际加速度 = 期望 + Fa_z/m
+        # 为恢复期望加速度，需额外追加 -Fa_z/m（正值），即减去 aero_comp_z
+        aero_comp_z = self.aero_force_z / mass  # 加速度 (m/s^2)，downwash 时为负
+        F_sp[2, 0] -= aero_comp_z  # 补偿：F_sp_z 加上 (-Fa_z/m) > 0，抵消向下扰动
 
         # 限制输出范围
         F_sp = np.clip(F_sp, np.array([[-5.0], [-5.0], [0.0]]), np.array([[5.0], [5.0], [19.6]]))
