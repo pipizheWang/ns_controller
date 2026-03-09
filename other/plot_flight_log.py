@@ -45,10 +45,11 @@ class FlightLogPlotter:
         if len(rows) == 0:
             raise ValueError("日志文件为空")
         
-        # 提取数据（适配新的字段名）
-        # tick是微秒单位
+        # 提取数据，兼容新格式（tick，微秒）和旧格式（timestamp，秒）
+        tick_key = 'tick' if 'tick' in rows[0] else 'timestamp'
+        self.is_new_format = 'tick' in rows[0]
         self.data = {
-            'timestamp': np.array([float(row['tick']) for row in rows]),
+            'timestamp': np.array([float(row[tick_key]) for row in rows]),
             'x': np.array([float(row['pos_x']) for row in rows]),
             'y': np.array([float(row['pos_y']) for row in rows]),
             'z': np.array([float(row['pos_z']) for row in rows]),
@@ -84,9 +85,12 @@ class FlightLogPlotter:
         if self.has_aero_data:
             self.data['Fa_z'] = np.array([float(row['Fa_z']) for row in rows])
         
-        # 将时间戳转换为相对时间（从0开始）
-        # tick是微秒单位，转换为秒
-        self.data['time'] = (self.data['timestamp'] - self.data['timestamp'][0]) / 1e6
+        # 将时间戳转换为相对时间（从0开始，单位：秒）
+        # 新格式 tick 是微秒，旧格式 timestamp 是秒（float）
+        if self.is_new_format:
+            self.data['time'] = (self.data['timestamp'] - self.data['timestamp'][0]) / 1e6
+        else:
+            self.data['time'] = self.data['timestamp'] - self.data['timestamp'][0]
         
         # 计算跟踪误差
         self.data['error_x'] = self.data['x'] - self.data['x_des']
@@ -185,6 +189,8 @@ def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
         ax.set_title(label + ' (log0)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=9)
+        if pos_key == 'z':
+            ax.set_ylim(4.9, 5.05)
     # 下排：_1（仅绘制对齐范围内的数据）
     for i, (ax, label, pos_key, des_key) in enumerate(zip(axes[1], axes_labels, pos_keys, des_keys)):
         time_slice = pl1.data['time'][idx1_start:idx1_end]
@@ -195,6 +201,8 @@ def _plot_position_response_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
         ax.set_title(label + ' (log1)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=9)
+        if pos_key == 'z':
+            ax.set_ylim(5.05, 5.2)
 
     plt.tight_layout()
     return fig
@@ -312,53 +320,60 @@ def _set_equal_3d(ax, x, y, z):
 
 def _plot_aero_force_dual(pl0: FlightLogPlotter, pl1: FlightLogPlotter):
     """
-    绘制气动扰动力响应曲线（仅当日志包含 Fa_z 时）
-    布局：1行2列，左图为 log0，右图为 log1
+    绘制气动扰动力响应曲线。
+    仅绘制包含 Fa_z 数据的日志子图（支持单侧或双侧）。
     使用对齐后的数据范围。
     """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    has_0 = pl0.has_aero_data
+    has_1 = pl1.has_aero_data
+    n_plots = (1 if has_0 else 0) + (1 if has_1 else 0)
+    if n_plots == 0:
+        return None
+
+    fig, axes = plt.subplots(1, n_plots, figsize=(7 * n_plots, 5))
+    if n_plots == 1:
+        axes = [axes]  # 统一为列表，方便索引
     fig.suptitle('Aerodynamic Force Response', fontsize=14, fontweight='bold')
 
-    # 将 Fa_z 从牛顿（N）转换为克力（gf）: 1 N = 1000/9.8 gf ≈ 102.04 gf
+    # 将 Fa_z 从牛顿（N）转换为克力（gf）: 1 N ≈ 102.04 gf
     conversion_factor = 1000.0 / 9.8
-    
-    # 获取对齐数据范围
-    idx0_start, idx0_end = pl0.aligned_indices
-    idx1_start, idx1_end = pl1.aligned_indices
+    ax_idx = 0
 
-    # 左图：log0
-    ax = axes[0]
-    time_slice0 = pl0.data['time'][idx0_start:idx0_end]
-    Fa_z_gf_0 = pl0.data['Fa_z'][idx0_start:idx0_end] * conversion_factor
-    ax.plot(time_slice0, Fa_z_gf_0, 'b-', linewidth=2, label='Estimated Fa_z')
-    ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-    ax.set_xlabel('Time (s)', fontsize=11)
-    ax.set_ylabel('Fa_z (gf)', fontsize=11)
-    ax.set_title('Aerodynamic Force (log0)', fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', fontsize=10)
-    mean_fa = np.mean(np.abs(Fa_z_gf_0))
-    max_fa = np.max(np.abs(Fa_z_gf_0))
-    ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
-            transform=ax.transAxes, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+    if has_0:
+        idx0_start, idx0_end = pl0.aligned_indices
+        ax = axes[ax_idx]; ax_idx += 1
+        time_slice0 = pl0.data['time'][idx0_start:idx0_end]
+        Fa_z_gf_0 = pl0.data['Fa_z'][idx0_start:idx0_end] * conversion_factor
+        ax.plot(time_slice0, Fa_z_gf_0, 'b-', linewidth=2, label='Estimated Fa_z')
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Fa_z (gf)', fontsize=11)
+        ax.set_title('Aerodynamic Force (log0)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=10)
+        mean_fa = np.mean(np.abs(Fa_z_gf_0))
+        max_fa = np.max(np.abs(Fa_z_gf_0))
+        ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
 
-    # 右图：log1
-    ax = axes[1]
-    time_slice1 = pl1.data['time'][idx1_start:idx1_end]
-    Fa_z_gf_1 = pl1.data['Fa_z'][idx1_start:idx1_end] * conversion_factor
-    ax.plot(time_slice1, Fa_z_gf_1, 'b-', linewidth=2, label='Estimated Fa_z')
-    ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-    ax.set_xlabel('Time (s)', fontsize=11)
-    ax.set_ylabel('Fa_z (gf)', fontsize=11)
-    ax.set_title('Aerodynamic Force (log1)', fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', fontsize=10)
-    mean_fa = np.mean(np.abs(Fa_z_gf_1))
-    max_fa = np.max(np.abs(Fa_z_gf_1))
-    ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
-            transform=ax.transAxes, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+    if has_1:
+        idx1_start, idx1_end = pl1.aligned_indices
+        ax = axes[ax_idx]
+        time_slice1 = pl1.data['time'][idx1_start:idx1_end]
+        Fa_z_gf_1 = pl1.data['Fa_z'][idx1_start:idx1_end] * conversion_factor
+        ax.plot(time_slice1, Fa_z_gf_1, 'b-', linewidth=2, label='Estimated Fa_z')
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Fa_z (gf)', fontsize=11)
+        ax.set_title('Aerodynamic Force (log1)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=10)
+        mean_fa = np.mean(np.abs(Fa_z_gf_1))
+        max_fa = np.max(np.abs(Fa_z_gf_1))
+        ax.text(0.02, 0.98, f'Fa_z Mean: {mean_fa:.2f}gf\nFa_z Max: {max_fa:.2f}gf',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
 
     plt.tight_layout()
     return fig
@@ -469,11 +484,11 @@ def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_d
 
     # 5. 气动扰动力曲线（仅当日志包含相关数据时）
     fig5 = None
-    if plotter0.has_aero_data and plotter1.has_aero_data:
+    if plotter0.has_aero_data or plotter1.has_aero_data:
         print("5. Plotting aerodynamic force response...")
         fig5 = _plot_aero_force_dual(plotter0, plotter1)
     else:
-        print("5. Skipping aerodynamic force plot (no Fa_z data in logs)")
+        print("5. Skipping aerodynamic force plot (no Fa_z data in either log)")
 
     if save_dir is not None:
         save_path = Path(save_dir)
@@ -482,8 +497,13 @@ def plot_all_dual(plotter0: FlightLogPlotter, plotter1: FlightLogPlotter, save_d
         stem0 = plotter0.log_file_path.stem
         stem1 = plotter1.log_file_path.stem
 
-        # 尝试提取共同前缀（去掉最后的 _0/_1）
+        # 尝试提取共同前缀
         def common_base(s0, s1):
+            # 新格式：uav0_TIMESTAMP / uav1_TIMESTAMP
+            if s0.startswith('uav0_') and s1.startswith('uav1_'):
+                ts0, ts1 = s0[5:], s1[5:]
+                return f"uav_{ts0}" if ts0 == ts1 else f"{s0}__{s1}"
+            # 旧格式：BASE_0 / BASE_1
             base0 = s0.rsplit('_', 1)[0]
             base1 = s1.rsplit('_', 1)[0]
             return base0 if base0 == base1 else f"{s0}__{s1}"
@@ -551,24 +571,29 @@ def main():
         csvs = list(directory.glob('*.csv'))
         if not csvs:
             return None
-        # 收集以 _0 / _1 结尾的文件及其基名
+
+        # 优先：新格式 uav0_* / uav1_*，分别找各自最新的文件再配对
+        new_uav0 = sorted(directory.glob('uav0_*.csv'), key=lambda f: f.stat().st_mtime)
+        new_uav1 = sorted(directory.glob('uav1_*.csv'), key=lambda f: f.stat().st_mtime)
+        if new_uav0 and new_uav1:
+            return new_uav0[-1], new_uav1[-1]
+
+        # 兼容：旧格式 *_0.csv / *_1.csv
         pair_map = {}
         for f in csvs:
-            stem = f.stem  # e.g., 2025-11-20_1532_0
+            stem = f.stem
             if stem.endswith('_0') or stem.endswith('_1'):
-                base = stem[:-2]  # 去掉后缀 _0/_1
-                suffix = stem[-1]
-                rec = pair_map.get(base, {'0': None, '1': None, 'mtime': 0.0})
-                rec[suffix] = f
-                # 记录该基名的最近修改时间（最大者）
+                uav_id = stem[-1]
+                key = stem[:-2]
+                rec = pair_map.get(key, {'0': None, '1': None, 'mtime': 0.0})
+                rec[uav_id] = f
                 rec['mtime'] = max(rec['mtime'], f.stat().st_mtime)
-                pair_map[base] = rec
-        # 选择同时拥有 0 和 1 的最近的一对
-        candidates = [ (base, rec) for base, rec in pair_map.items() if rec['0'] and rec['1'] ]
+                pair_map[key] = rec
+        candidates = [(key, rec) for key, rec in pair_map.items() if rec['0'] and rec['1']]
         if not candidates:
             return None
         candidates.sort(key=lambda t: t[1]['mtime'])
-        base, rec = candidates[-1]
+        _, rec = candidates[-1]
         return rec['0'], rec['1']
 
     if args.log0 and args.log1:

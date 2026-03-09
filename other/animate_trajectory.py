@@ -13,6 +13,7 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from pathlib import Path
 import csv
 import sys
+import re
 from matplotlib.patches import Circle
 import mpl_toolkits.mplot3d.art3d as art3d
 
@@ -405,6 +406,15 @@ class DualTrajectoryAnimator:
         self.rotor_circles1 = []
         self.info_text = None
 
+    @staticmethod
+    def _quat_to_euler(qx, qy, qz, qw):
+        """四元数(x,y,z,w) -> ZYX欧拉角 (roll, pitch, yaw)"""
+        roll  = np.arctan2(2*(qw*qx + qy*qz), 1 - 2*(qx*qx + qy*qy))
+        sinp  = 2*(qw*qy - qz*qx)
+        pitch = np.where(np.abs(sinp) >= 1, np.sign(sinp)*np.pi/2, np.arcsin(sinp))
+        yaw   = np.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+        return roll, pitch, yaw
+
     def _load_one(self, path):
         if not path.exists():
             raise FileNotFoundError(f"日志文件不存在: {path}")
@@ -413,20 +423,54 @@ class DualTrajectoryAnimator:
             rows = list(reader)
         if not rows:
             raise ValueError(f"日志文件为空: {path}")
-        data = {
-            'tick': np.array([float(row['tick']) for row in rows]),
-            'x': np.array([float(row['pos_x']) for row in rows]),
-            'y': np.array([float(row['pos_y']) for row in rows]),
-            'z': np.array([float(row['pos_z']) for row in rows]),
-            'roll': np.array([0.0 for row in rows]),
-            'pitch': np.array([0.0 for row in rows]),
-            'yaw': np.array([0.0 for row in rows]),
-            'x_des': np.array([float(row.get('x_des', row['pos_x'])) for row in rows]),
-            'y_des': np.array([float(row.get('y_des', row['pos_y'])) for row in rows]),
-            'z_des': np.array([float(row.get('z_des', row['pos_z'])) for row in rows]),
-        }
-        # tick是微秒单位，转换为秒
-        data['time'] = (data['tick'] - data['tick'][0]) / 1e6
+        first = rows[0]
+        if 'tick' in first:
+            # 新格式: tick(微秒), pos_x/pos_y/pos_z, qua_x/qua_y/qua_z/qua_w
+            tick = np.array([float(row['tick']) for row in rows])
+            xs = np.array([float(row['pos_x']) for row in rows])
+            ys = np.array([float(row['pos_y']) for row in rows])
+            zs = np.array([float(row['pos_z']) for row in rows])
+            if 'qua_x' in first:
+                qx = np.array([float(row['qua_x']) for row in rows])
+                qy = np.array([float(row['qua_y']) for row in rows])
+                qz = np.array([float(row['qua_z']) for row in rows])
+                qw = np.array([float(row['qua_w']) for row in rows])
+                roll, pitch, yaw = self._quat_to_euler(qx, qy, qz, qw)
+            else:
+                roll  = np.zeros(len(rows))
+                pitch = np.zeros(len(rows))
+                yaw   = np.zeros(len(rows))
+            data = {
+                'tick':  tick,
+                'x':     xs,
+                'y':     ys,
+                'z':     zs,
+                'roll':  roll,
+                'pitch': pitch,
+                'yaw':   yaw,
+                'x_des': np.array([float(row.get('x_des', row['pos_x'])) for row in rows]),
+                'y_des': np.array([float(row.get('y_des', row['pos_y'])) for row in rows]),
+                'z_des': np.array([float(row.get('z_des', row['pos_z'])) for row in rows]),
+            }
+            # tick是微秒单位，转换为秒
+            data['time'] = (data['tick'] - data['tick'][0]) / 1e6
+        else:
+            # 旧格式: timestamp(秒), x/y/z, roll/pitch/yaw, x_des/y_des/z_des
+            ts = np.array([float(row['timestamp']) for row in rows])
+            data = {
+                'tick':  ts,
+                'x':     np.array([float(row['x']) for row in rows]),
+                'y':     np.array([float(row['y']) for row in rows]),
+                'z':     np.array([float(row['z']) for row in rows]),
+                'roll':  np.array([float(row.get('roll',  0.0)) for row in rows]),
+                'pitch': np.array([float(row.get('pitch', 0.0)) for row in rows]),
+                'yaw':   np.array([float(row.get('yaw',   0.0)) for row in rows]),
+                'x_des': np.array([float(row.get('x_des', row['x'])) for row in rows]),
+                'y_des': np.array([float(row.get('y_des', row['y'])) for row in rows]),
+                'z_des': np.array([float(row.get('z_des', row['z'])) for row in rows]),
+            }
+            # timestamp已是秒，转换为相对时间
+            data['time'] = ts - ts[0]
         return data, len(rows)
 
     def _align_timestamps(self):
@@ -917,6 +961,29 @@ def main():
         csvs = list(directory.glob('*.csv'))
         if not csvs:
             return None
+        candidates = []  # (file0, file1, base_name, mtime)
+
+        # 模式1：uav0_YYYYMMDD_HHMMSS.csv + uav1_YYYYMMDD_HHMMSS.csv
+        uav_pat = re.compile(r'^uav(\d+)_(\d{8}_\d{6})\.csv$')
+        uav_map = {}  # id -> {mtime, file}
+        for f in csvs:
+            m = uav_pat.match(f.name)
+            if m:
+                uav_id = m.group(1)
+                rec = uav_map.get(uav_id, {'mtime': 0.0, 'file': None})
+                mt = f.stat().st_mtime
+                if mt > rec['mtime']:
+                    rec['mtime'] = mt
+                    rec['file'] = f
+                uav_map[uav_id] = rec
+        if '0' in uav_map and '1' in uav_map and uav_map['0']['file'] and uav_map['1']['file']:
+            f0 = uav_map['0']['file']
+            f1 = uav_map['1']['file']
+            mt = max(uav_map['0']['mtime'], uav_map['1']['mtime'])
+            base = f0.stem  # e.g. uav0_20260306_220033
+            candidates.append((f0, f1, base, mt))
+
+        # 模式2：stem_0.csv + stem_1.csv（旧格式）
         pair_map = {}
         for f in csvs:
             stem = f.stem
@@ -927,12 +994,15 @@ def main():
                 rec[suffix] = f
                 rec['mtime'] = max(rec['mtime'], f.stat().st_mtime)
                 pair_map[base] = rec
-        candidates = [(base, rec) for base, rec in pair_map.items() if rec['0'] and rec['1']]
+        for base, rec in pair_map.items():
+            if rec['0'] and rec['1']:
+                candidates.append((rec['0'], rec['1'], base, rec['mtime']))
+
         if not candidates:
             return None
-        candidates.sort(key=lambda t: t[1]['mtime'])
-        base, rec = candidates[-1]
-        return rec['0'], rec['1'], base
+        candidates.sort(key=lambda t: t[3])
+        f0, f1, base, _ = candidates[-1]
+        return f0, f1, base
 
     if args.log0 and args.log1:
         log0 = Path(args.log0)

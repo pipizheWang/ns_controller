@@ -79,13 +79,27 @@ class AeroForceEstimator(Node):
             1.0 / self.estimation_rate, 
             self.estimation_callback
         )
-        
+
+        # 调试用计数器：每 50 次回调（约 1 秒）打印一次诊断信息
+        self._dbg_counter = 0
+
         self.get_logger().info("Aerodynamic force estimator initialized")
     
     def load_neural_networks(self):
         """加载训练好的神经网络模型"""
-        # 模型文件位于 train/model/ 目录下
-        model_dir = Path(__file__).parent.parent / 'train' / 'model'
+        # 沿父目录链向上查找 px4_ws，再定位到 src/ns_controller/train/model
+        # （兼容 colcon build 安装后 __file__ 指向 site-packages 的情况）
+        def resolve_model_dir():
+            current = Path(__file__).resolve()
+            for parent in current.parents:
+                if parent.name == 'px4_ws':
+                    candidate = parent / 'src' / 'ns_controller' / 'train' / 'model'
+                    return candidate
+            # 回退：相对 __file__ 推算（仅在直接从源目录运行时有效）
+            return Path(__file__).parent.parent / 'train' / 'model'
+
+        model_dir = resolve_model_dir()
+        self.get_logger().info(f"Model directory resolved to: {model_dir}")
 
         if not model_dir.exists():
             self.get_logger().warn(f"Model directory not found: {model_dir}")
@@ -224,10 +238,27 @@ class AeroForceEstimator(Node):
             upper_velo.twist.linear.z
         ], dtype=np.float32)
 
+        # 修正初始位置偏移，与日志记录保持一致：
+        # UAV0（下层/lower）的坐标原点偏移 (+2, +2, 0)，需减去
+        # UAV1（上层/upper）的坐标原点偏移 (-2, -2, 0)，需加上
+        lower_pos_corrected = lower_pos - np.array([2.0, 2.0, 0.0], dtype=np.float32)
+        upper_pos_corrected = upper_pos + np.array([2.0, 2.0, 0.0], dtype=np.float32)
+
         # 6维输入向量：[相对位置(3), 相对速度(3)]
         network_input = np.empty(6, dtype=np.float32)
-        network_input[0:3] = upper_pos - lower_pos
+        network_input[0:3] = upper_pos_corrected - lower_pos_corrected
         network_input[3:6] = upper_vel - lower_vel
+
+        # ── 调试信息（随 _dbg_counter 控制频率） ──
+        self._dbg_print_data = {
+            'lower_pos_raw': lower_pos.copy(),
+            'upper_pos_raw': upper_pos.copy(),
+            'lower_pos_corr': lower_pos_corrected.copy(),
+            'upper_pos_corr': upper_pos_corrected.copy(),
+            'lower_vel': lower_vel.copy(),
+            'upper_vel': upper_vel.copy(),
+            'network_input': network_input.copy(),
+        }
 
         return network_input
     
@@ -270,6 +301,24 @@ class AeroForceEstimator(Node):
             )
             Fa_z_uav0 = self.estimate_aero_force(network_input)
 
+            # ── 每 50 次回调打印一次诊断信息（约 1 秒一次） ──
+            self._dbg_counter += 1
+            if self._dbg_counter % 50 == 1:
+                d = self._dbg_print_data
+                self.get_logger().info(
+                    f"[DBG #{self._dbg_counter}]\n"
+                    f"  UAV0 raw pos  : x={d['lower_pos_raw'][0]:.4f}  y={d['lower_pos_raw'][1]:.4f}  z={d['lower_pos_raw'][2]:.4f}\n"
+                    f"  UAV1 raw pos  : x={d['upper_pos_raw'][0]:.4f}  y={d['upper_pos_raw'][1]:.4f}  z={d['upper_pos_raw'][2]:.4f}\n"
+                    f"  UAV0 corr pos : x={d['lower_pos_corr'][0]:.4f}  y={d['lower_pos_corr'][1]:.4f}  z={d['lower_pos_corr'][2]:.4f}\n"
+                    f"  UAV1 corr pos : x={d['upper_pos_corr'][0]:.4f}  y={d['upper_pos_corr'][1]:.4f}  z={d['upper_pos_corr'][2]:.4f}\n"
+                    f"  UAV0 vel      : vx={d['lower_vel'][0]:.4f}  vy={d['lower_vel'][1]:.4f}  vz={d['lower_vel'][2]:.4f}\n"
+                    f"  UAV1 vel      : vx={d['upper_vel'][0]:.4f}  vy={d['upper_vel'][1]:.4f}  vz={d['upper_vel'][2]:.4f}\n"
+                    f"  NN input [rel_pos|rel_vel]: "
+                    f"[{d['network_input'][0]:.4f}, {d['network_input'][1]:.4f}, {d['network_input'][2]:.4f} | "
+                    f"{d['network_input'][3]:.4f}, {d['network_input'][4]:.4f}, {d['network_input'][5]:.4f}]\n"
+                    f"  --> Fa_z = {Fa_z_uav0:.6f} N  ({Fa_z_uav0*1000/self.gravity:.4f} gf)"
+                )
+
             # 发布 UAV0 的气动力估计
             force_msg = Vector3Stamped()
             force_msg.header.stamp = self.get_clock().now().to_msg()
@@ -281,12 +330,7 @@ class AeroForceEstimator(Node):
 
             # DEBUG 级别打印调试信息
             if self.get_logger().get_effective_level() <= rclpy.logging.LoggingSeverity.DEBUG:
-                rel_pos = np.array([
-                    self.uav1_pose.pose.position.x - self.uav0_pose.pose.position.x,
-                    self.uav1_pose.pose.position.y - self.uav0_pose.pose.position.y,
-                    self.uav1_pose.pose.position.z - self.uav0_pose.pose.position.z
-                ])
-                rel_dist = np.linalg.norm(rel_pos)
+                rel_dist = np.linalg.norm(network_input[0:3])
                 self.get_logger().debug(
                     f"UAV0: z={self.uav0_pose.pose.position.z:.2f}m, Fa_z={Fa_z_uav0:.3f}N | "
                     f"Rel_dist={rel_dist:.2f}m"

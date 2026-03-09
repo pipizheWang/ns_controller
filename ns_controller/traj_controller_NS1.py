@@ -5,8 +5,9 @@ import rclpy
 import numpy as np
 from numpy.linalg import norm
 from rclpy.node import Node
-from mavros_msgs.msg import AttitudeTarget
+from mavros_msgs.msg import AttitudeTarget, RCOut
 from geometry_msgs.msg import PoseStamped, TwistStamped
+from sensor_msgs.msg import Imu, BatteryState
 from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from .traj import TargetTraj
@@ -23,12 +24,15 @@ class TrajController(Node):
 
         self.control_rate = 50.0
         # UAV1 使用 FLAG=1（z=2.0）与 UAV0 水平轨迹一致
-        self.traj = TargetTraj(FLAG=1)
+        self.traj = TargetTraj(FLAG=5)
 
         self.clock = Clock()
 
         self.current_pa = None
         self.current_velo = None
+        self.current_imu = None
+        self.current_rcout = None
+        self.current_battery = None
 
         self.traj_t = -1.0
         self.t_0 = self.clock.now()
@@ -41,6 +45,12 @@ class TrajController(Node):
             PoseStamped, '/uav1/local_position/pose', self.pa_cb, qos_best_effort)
         self.velo_sub_ = self.create_subscription(
             TwistStamped, '/uav1/local_position/velocity_local', self.velo_cb, qos_best_effort)
+        self.imu_sub_ = self.create_subscription(
+            Imu, '/uav1/imu/data', self.imu_cb, qos_best_effort)
+        self.rcout_sub_ = self.create_subscription(
+            RCOut, '/uav1/rc/out', self.rcout_cb, qos_best_effort)
+        self.battery_sub_ = self.create_subscription(
+            BatteryState, '/uav1/battery', self.battery_cb, qos_best_effort)
 
         # UAV1 为上层飞机，不受下洗扰动影响，无需订阅气动扰动力估计
 
@@ -72,34 +82,61 @@ class TrajController(Node):
         log_dir = resolve_source_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
-        log_filename = f'{timestamp}_1.csv'
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_filename = f'uav1_{timestamp}.csv'
         self.log_file_path = log_dir / log_filename
 
         self.log_file = open(self.log_file_path, 'w', newline='')
         self.csv_writer = csv.writer(self.log_file)
 
         header = [
-            'timestamp',
-            'x', 'y', 'z',
-            'vx', 'vy', 'vz',
-            'roll', 'pitch', 'yaw',
-            'x_des', 'y_des', 'z_des'
+            'tick',
+            'pos_x', 'pos_y', 'pos_z',
+            'vel_x', 'vel_y', 'vel_z',
+            'acc_x', 'acc_y', 'acc_z',
+            'qua_x', 'qua_y', 'qua_z', 'qua_w',
+            'pwm_1', 'pwm_2', 'pwm_3', 'pwm_4',
+            'voltage'
         ]
         self.csv_writer.writerow(header)
         self.log_file.flush()
         self.get_logger().info(f"Flight log initialized: {self.log_file_path}")
 
-    def log_flight_data(self, pose, velo, rotation_matrix, traj_p):
-        r = R.from_matrix(rotation_matrix)
-        roll, pitch, yaw = r.as_euler('xyz', degrees=True)
-        current_time = self.get_clock().now().nanoseconds * 1e-9
+    def log_flight_data(self, pose, velo, quaternion):
+        tick = self.get_clock().now().nanoseconds // 1000
+
+        pos_x, pos_y, pos_z = pose[0, 0]+2.0, pose[1, 0]+2.0, pose[2, 0]
+        vel_x, vel_y, vel_z = velo[0, 0], velo[1, 0], velo[2, 0]
+
+        if self.current_imu is not None:
+            acc_x = self.current_imu.linear_acceleration.x
+            acc_y = self.current_imu.linear_acceleration.y
+            acc_z = self.current_imu.linear_acceleration.z
+        else:
+            acc_x, acc_y, acc_z = 0.0, 0.0, 0.0
+
+        qua_x, qua_y, qua_z, qua_w = quaternion
+        norm_q = np.sqrt(qua_x**2 + qua_y**2 + qua_z**2 + qua_w**2)
+        qua_x, qua_y, qua_z, qua_w = qua_x/norm_q, qua_y/norm_q, qua_z/norm_q, qua_w/norm_q
+
+        if self.current_rcout is not None and len(self.current_rcout.channels) >= 4:
+            pwm_1 = self.current_rcout.channels[0]
+            pwm_2 = self.current_rcout.channels[1]
+            pwm_3 = self.current_rcout.channels[2]
+            pwm_4 = self.current_rcout.channels[3]
+        else:
+            pwm_1, pwm_2, pwm_3, pwm_4 = 0.0, 0.0, 0.0, 0.0
+
+        voltage = self.current_battery.voltage if self.current_battery is not None else 0.0
+
         data_row = [
-            current_time,
-            pose[0, 0]+4.0, pose[1, 0], pose[2, 0],
-            velo[0, 0], velo[1, 0], velo[2, 0],
-            roll, pitch, yaw,
-            traj_p[0, 0]+4.0, traj_p[1, 0], traj_p[2, 0]
+            tick,
+            pos_x, pos_y, pos_z,
+            vel_x, vel_y, vel_z,
+            acc_x, acc_y, acc_z,
+            qua_x, qua_y, qua_z, qua_w,
+            pwm_1, pwm_2, pwm_3, pwm_4,
+            voltage
         ]
         self.csv_writer.writerow(data_row)
         self.log_file.flush()
@@ -115,6 +152,21 @@ class TrajController(Node):
 
     def velo_cb(self, msg):
         self.current_velo = msg
+
+    def imu_cb(self, msg):
+        if self.current_imu is None:
+            self.get_logger().info("First IMU data received")
+        self.current_imu = msg
+
+    def rcout_cb(self, msg):
+        if self.current_rcout is None:
+            self.get_logger().info("First RCOut data received")
+        self.current_rcout = msg
+
+    def battery_cb(self, msg):
+        if self.current_battery is None:
+            self.get_logger().info("First Battery data received")
+        self.current_battery = msg
 
     def update_trajectory_time(self, traj_mode):
         if traj_mode and self.traj_t == -1.0:
@@ -202,7 +254,13 @@ class TrajController(Node):
 
         # 只有在轨迹跟踪模式下才记录日志
         if traj_mode and self.traj_t >= 0:
-            self.log_flight_data(pose, velo, rotation_matrix, traj_p)
+            quaternion = [
+                self.current_pa.pose.orientation.x,
+                self.current_pa.pose.orientation.y,
+                self.current_pa.pose.orientation.z,
+                self.current_pa.pose.orientation.w
+            ]
+            self.log_flight_data(pose, velo, quaternion)
 
         if self.get_logger().get_effective_level() <= rclpy.logging.LoggingSeverity.DEBUG:
             position_error = norm(pose - traj_p)
