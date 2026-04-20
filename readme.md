@@ -122,28 +122,12 @@ ros2 service call /uav0/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
 ```bash
 ros2 param set /traj_controller_NL0 traj_mode true
 ros2 param set /traj_controller_NL1 traj_mode true
-
-ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NS
 ```
 
 #### NL 模式
 ```bash
 ros2 param set /traj_controller_NS0 traj_mode true
 ros2 param set /traj_controller_NS1 traj_mode true
-
-ros2 run ns_controller traj_sync --ros-args -p controller_mode:=NL
-```
-
-### 控制轨迹同步开关
-
-#### 开启同步
-```bash
-ros2 service call /sync_traj_mode std_srvs/srv/SetBool "{data: true}"
-```
-
-#### 关闭同步
-```bash
-ros2 service call /sync_traj_mode std_srvs/srv/SetBool "{data: false}"
 ```
 
 ---
@@ -165,12 +149,3 @@ thrust = -0.0015 * a² + 0.0764 * a + 0.1237
 
 **悬停参数：**
 - PWM = 770
-
----
-
-## 账号信息
-
-**邮箱：** sertmm2@stu.xidian.edu.cn  
-**密码：** 4G399y5DKPAg
-
-> ⚠️ **注意：** 建议将敏感信息（如账号密码）从公开仓库中移除，使用环境变量或配置文件管理。
